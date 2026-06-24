@@ -52,3 +52,38 @@ Commit made? Not yet
 
 Commit message or link:
 Not yet.
+
+DNS-002 Final Update
+
+Tests:
+Command output:
+go test ./...
+git status
+git add .
+git commit -m "Implement safe readU16 with tests"
+ok      github.com/zhuoqunwei/dns-resolver      0.290s
+On branch master
+Changes not staged for commit:
+  (use "git add/rm <file>..." to update what will be committed)
+  (use "git restore <file>..." to discard changes in working directory)
+        deleted:    main.go
+
+Untracked files:
+  (use "git add <file>..." to include in what will be committed)
+        dns.go
+        dns_test.go
+        go
+        update.md
+
+no changes added to commit (use "git add" and/or "git commit -a")
+[master a1749d2] Implement safe readU16 with tests
+ 5 files changed, 116 insertions(+), 17 deletions(-)
+ create mode 100644 dns.go
+ create mode 100644 dns_test.go
+ create mode 100644 go
+ delete mode 100644 main.go
+ create mode 100644 update.md
+Commit message: git commit -m "Implement safe readU16 with tests"
+What I learned: how to write go test and run test command. i learned go format. i learned details of printf and format verbs. i learned about how to write a function in go and main is not necessary
+What I’m still unsure about: still behind on go syntax. like for loop and return value.
+My guess for next task: read about what to parse on dns
