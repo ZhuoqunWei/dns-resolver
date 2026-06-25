@@ -34,3 +34,40 @@ func TestReadU16(t *testing.T) {
 		})
 	}
 }
+
+func TestParseHeader(t *testing.T) {
+	tests := []struct {
+		name    string
+		data    []byte
+		want    Header
+		wantErr bool
+	}{
+		{
+			name:    "valid header",
+			data:    []byte{0x12, 0x34, 0x01, 0x00, 0x00, 0x01, 0x00, 0x02, 0x00, 0x03, 0x00, 0x04},
+			want:    Header{ID: 4660, Flags: 256, QDCount: 1, ANCount: 2, NSCount: 3, ARCount: 4},
+			wantErr: false,
+		},
+		{
+			name:    "short data",
+			data:    []byte{0x12, 0x34},
+			want:    Header{},
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := parseHeader(tt.data)
+
+			if (err != nil) != tt.wantErr {
+				t.Errorf("parseHeader() error = %v, wantErr %v", err, tt.wantErr)
+				return
+			}
+
+			if got != tt.want {
+				t.Errorf("parseHeader() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}

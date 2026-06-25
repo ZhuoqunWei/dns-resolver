@@ -24,3 +24,52 @@ func readU16(data []byte, offset int) (uint16, error) {
 	// The first byte is the high byte, and the second byte is the low byte
 	return uint16(data[offset])<<8 | uint16(data[offset+1]), nil
 }
+
+type Header struct {
+	ID      uint16
+	Flags   uint16
+	QDCount uint16
+	ANCount uint16
+	NSCount uint16
+	ARCount uint16
+}
+
+func parseHeader(data []byte) (Header, error) {
+	if len(data) < 12 {
+		return Header{}, fmt.Errorf("data too short to contain DNS header")
+	}
+
+	id, err := readU16(data, 0)
+	if err != nil {
+		return Header{}, fmt.Errorf("failed to read ID: %v", err)
+	}
+	flags, err := readU16(data, 2)
+	if err != nil {
+		return Header{}, fmt.Errorf("failed to read Flags: %v", err)
+	}
+	qdCount, err := readU16(data, 4)
+	if err != nil {
+		return Header{}, fmt.Errorf("failed to read QDCount: %v", err)
+	}
+	anCount, err := readU16(data, 6)
+	if err != nil {
+		return Header{}, fmt.Errorf("failed to read ANCount: %v", err)
+	}
+	nsCount, err := readU16(data, 8)
+	if err != nil {
+		return Header{}, fmt.Errorf("failed to read NSCount: %v", err)
+	}
+	arCount, err := readU16(data, 10)
+	if err != nil {
+		return Header{}, fmt.Errorf("failed to read ARCount: %v", err)
+	}
+
+	return Header{
+		ID:      id,
+		Flags:   flags,
+		QDCount: qdCount,
+		ANCount: anCount,
+		NSCount: nsCount,
+		ARCount: arCount,
+	}, nil
+}
