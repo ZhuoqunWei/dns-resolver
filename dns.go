@@ -34,6 +34,7 @@ type Header struct {
 	ARCount uint16
 }
 
+// parse 12 bytes dns header
 func parseHeader(data []byte) (Header, error) {
 	if len(data) < 12 {
 		return Header{}, fmt.Errorf("data too short to contain DNS header")
@@ -72,4 +73,29 @@ func parseHeader(data []byte) (Header, error) {
 		NSCount: nsCount,
 		ARCount: arCount,
 	}, nil
+}
+
+type Flags struct {
+    QR     bool
+    Opcode uint8
+    AA     bool
+    TC     bool
+    RD     bool
+    RA     bool
+    Z      uint8
+    RCode  uint8
+}
+
+func parseFlags(flags uint16) Flags {
+	// Extract individual fields from the flags
+	return Flags{
+		QR:     (flags & 0x8000) != 0,
+		Opcode: uint8((flags >> 11) & 0xF),
+		AA:     (flags & 0x0400) != 0,
+		TC:     (flags & 0x0200) != 0,
+		RD:     (flags & 0x0100) != 0,
+		RA:     (flags & 0x0080) != 0,
+		Z:      uint8((flags >> 4) & 0x7),
+		RCode:  uint8((flags >> 0) & 0xF),
+	}
 }

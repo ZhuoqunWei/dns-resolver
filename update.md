@@ -87,3 +87,23 @@ Commit message: git commit -m "Implement safe readU16 with tests"
 What I learned: how to write go test and run test command. i learned go format. i learned details of printf and format verbs. i learned about how to write a function in go and main is not necessary
 What I’m still unsure about: still behind on go syntax. like for loop and return value.
 My guess for next task: read about what to parse on dns
+
+
+
+Daily DNS Update: June 24
+
+Yesterday:
+Finished readU16 with tests and cleaned accidental go file.
+
+Today:
+Implement parseHeader(data []byte) (Header, error).
+
+Done means:
+12-byte packet parses into six fields, short packet returns error, go test passes, commit made.
+passed test
+git commit -m "implemented parseHeader to parse first 12 bytes in the header"
+
+Blocker:
+not too much, but i did use a little auto completion to get the job done
+My own guess:
+next step is to break down the flags and parse them

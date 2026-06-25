@@ -50,7 +50,7 @@ func TestParseHeader(t *testing.T) {
 		},
 		{
 			name:    "short data",
-			data:    []byte{0x12, 0x34},
+			data:    []byte{0x12, 0x34, 0x01},
 			want:    Header{},
 			wantErr: true,
 		},
@@ -67,6 +67,50 @@ func TestParseHeader(t *testing.T) {
 
 			if got != tt.want {
 				t.Errorf("parseHeader() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestParseFlags(t *testing.T) {
+	tests := []struct {
+		name string
+		data uint16
+		want Flags
+	}{
+		{
+			name: "recursion desired query",
+			data: 0x0100,
+			want: Flags{RD: true},
+		},
+		{
+			name: "response with recursion desired and available",
+			data: 0x8180,
+			want: Flags{QR: true, RD: true, RA: true},
+		},
+		{
+			name: "opcode extracted correctly",
+			data: 0x0800,
+			want: Flags{Opcode: 1},
+		},
+		{
+			name: "rcode extracted correctly",
+			data: 0x0005,
+			want: Flags{RCode: 5},
+		},
+		{
+			name: "response with NXDOMAIN",
+			data: 0x8003,
+			want: Flags{QR: true, RCode: 3},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := parseFlags(tt.data)
+
+			if got != tt.want {
+				t.Errorf("parseFlags() = %+v, want %+v", got, tt.want)
 			}
 		})
 	}
