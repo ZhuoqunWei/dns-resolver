@@ -115,3 +115,72 @@ func TestParseFlags(t *testing.T) {
 		})
 	}
 }
+
+func TestParseQName(t *testing.T) {
+	/**
+	tests for valid name
+	tests for next offset
+	tests for truncated label
+	tests for missing 00
+	**/
+	tests := []struct {
+		name    string
+		data    []byte
+		offset  int
+		want    string
+		wantOff int
+		wantErr bool
+	}{
+		{
+			name:    "valid name",
+			data:    []byte{0x03, 'w', 'w', 'w', 0x07, 'e', 'x', 'a', 'm', 'p', 'l', 'e', 0x03, 'c', 'o', 'm', 0x00},
+			offset:  0,
+			want:    "www.example.com",
+			wantOff: 17,
+			wantErr: false,
+		},
+		{
+			name:    "next offset after valid name",
+			data:    []byte{0x03, 'w', 'w', 'w', 0x07, 'e', 'x', 'a', 'm', 'p', 'l', 'e', 0x03, 'c', 'o', 'm', 0x00, 0x01, 0x02},
+			offset:  0,
+			want:    "www.example.com",
+			wantOff: 17,
+			wantErr: false,
+		},
+		{
+			name:    "truncated label",
+			data:    []byte{0x03, 'w', 'w'},
+			offset:  0,
+			want:    "",
+			wantOff: -1,
+			wantErr: true,
+		},
+		{
+			name:    "missing 00 terminator",
+			data:    []byte{0x03, 'w', 'w', 'w', 0x07, 'e', 'x', 'a', 'm', 'p', 'l', 'e', 0x03, 'c', 'o', 'm'},
+			offset:  0,
+			want:    "",
+			wantOff: -1,
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, gotOff, err := parseQName(tt.data, tt.offset)
+
+			if (err != nil) != tt.wantErr {
+				t.Errorf("parseQName() error = %v, wantErr %v", err, tt.wantErr)
+				return
+			}
+
+			if got != tt.want {
+				t.Errorf("parseQName() = %v, want %v", got, tt.want)
+			}
+
+			if gotOff != tt.wantOff {
+				t.Errorf("parseQName() offset = %v, want %v", gotOff, tt.wantOff)
+			}
+		})
+	}
+}

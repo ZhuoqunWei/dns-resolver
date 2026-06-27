@@ -107,3 +107,45 @@ Blocker:
 not too much, but i did use a little auto completion to get the job done
 My own guess:
 next step is to break down the flags and parse them
+
+
+
+June 24
+DNS-004 Final Update
+
+Task: write a parseFlags function to parse a uint for flags in the dns header
+Tests: 1. Normal query asking for recursion
+   - flags: 0x0100
+   - checks RD = true
+
+2. Normal response with recursion support
+   - flags: 0x8180
+   - checks QR = true, RD = true, RA = true
+
+3. Opcode extraction
+   - flags: 0x0800
+   - checks Opcode = 1
+
+4. RCode extraction
+   - flags: 0x0005
+   - checks RCode = 5
+
+5. NXDOMAIN response
+   - flags: 0x8003
+   - checks QR = true, RCode = 3
+
+6. Authoritative response
+   - flags: 0x8400
+   - checks QR = true, AA = true
+
+7. Truncated response
+   - flags: 0x8200
+   - checks QR = true, TC = true
+
+   use ai a bit for summary and come up with specific tests
+Command output:go test ./...
+ok      github.com/zhuoqunwei/dns-resolver      0.479s
+Commit message: ➜  dns-resolver git:(master) ✗ git commit -m "implemented parseFlags to pasrse flags in the dns header"
+What I understand:from parsing bytes to parsing uint16, by use the existing method of readU16 to use bit mask
+What I’m unsure about: is there any error that is needed on parse flags
+My guess for next task: parse QDCOUNT

@@ -1,15 +1,10 @@
 package main
 
-import "fmt"
+import (
+	"fmt"
+	"strings"
+)
 
-/*
-*
-1. readU16([]byte{0x12, 0x34}, 0) returns 4660
-2. readU16([]byte{0x00, 0x01}, 0) returns 1
-3. readU16([]byte{0x12}, 0) returns an error
-4. go test ./... passes
-5. commit made
-*/
 func readU16(data []byte, offset int) (uint16, error) {
 	// Check if the offset is valid
 	if offset < 0 || offset >= len(data) {
@@ -76,14 +71,14 @@ func parseHeader(data []byte) (Header, error) {
 }
 
 type Flags struct {
-    QR     bool
-    Opcode uint8
-    AA     bool
-    TC     bool
-    RD     bool
-    RA     bool
-    Z      uint8
-    RCode  uint8
+	QR     bool
+	Opcode uint8
+	AA     bool
+	TC     bool
+	RD     bool
+	RA     bool
+	Z      uint8
+	RCode  uint8
 }
 
 func parseFlags(flags uint16) Flags {
@@ -97,5 +92,44 @@ func parseFlags(flags uint16) Flags {
 		RA:     (flags & 0x0080) != 0,
 		Z:      uint8((flags >> 4) & 0x7),
 		RCode:  uint8((flags >> 0) & 0xF),
+	}
+}
+
+func parseQName(data []byte, offset int) (string, int, error){
+	// first check the offset is valid
+	if offset < 0 || offset >= len(data) {
+		return "", -1, fmt.Errorf("offset %d is out of bounds for data length %d", offset, len(data))
+	}	
+
+	// create label slice
+	labels := []string{}
+
+	// Moving cursor
+	i := offset
+
+
+	// loop through labels
+	for {
+		// check if out of bounds
+		if i >= len(data) {
+			return "", -1, fmt.Errorf("offset %d is out of bounds for data length %d", i, len(data))
+		}
+
+		length := int(data[i])
+		i ++
+
+		if length == 0 {
+			return strings.Join(labels, "."), i, nil
+		}
+		if length > 63 {
+			return "", -1, fmt.Errorf("label length %d exceeds maximum of 63", length)
+		}
+		if i + length > len(data) {
+			return "", -1, fmt.Errorf("label length %d exceeds remaining data length %d", length, len(data) - i)
+		}
+
+		label := string(data[i:i+length])
+		labels = append(labels, label)
+		i += length
 	}
 }
