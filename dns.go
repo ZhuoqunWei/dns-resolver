@@ -95,18 +95,17 @@ func parseFlags(flags uint16) Flags {
 	}
 }
 
-func parseQName(data []byte, offset int) (string, int, error){
+func parseQName(data []byte, offset int) (string, int, error) {
 	// first check the offset is valid
 	if offset < 0 || offset >= len(data) {
 		return "", -1, fmt.Errorf("offset %d is out of bounds for data length %d", offset, len(data))
-	}	
+	}
 
 	// create label slice
 	labels := []string{}
 
 	// Moving cursor
 	i := offset
-
 
 	// loop through labels
 	for {
@@ -116,7 +115,7 @@ func parseQName(data []byte, offset int) (string, int, error){
 		}
 
 		length := int(data[i])
-		i ++
+		i++
 
 		if length == 0 {
 			return strings.Join(labels, "."), i, nil
@@ -124,11 +123,11 @@ func parseQName(data []byte, offset int) (string, int, error){
 		if length > 63 {
 			return "", -1, fmt.Errorf("label length %d exceeds maximum of 63", length)
 		}
-		if i + length > len(data) {
-			return "", -1, fmt.Errorf("label length %d exceeds remaining data length %d", length, len(data) - i)
+		if i+length > len(data) {
+			return "", -1, fmt.Errorf("label length %d exceeds remaining data length %d", length, len(data)-i)
 		}
 
-		label := string(data[i:i+length])
+		label := string(data[i : i+length])
 		labels = append(labels, label)
 		i += length
 	}
