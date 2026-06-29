@@ -132,3 +132,35 @@ func parseQName(data []byte, offset int) (string, int, error) {
 		i += length
 	}
 }
+
+type Question struct {
+	Name   string
+	QType  uint16
+	QClass uint16
+}
+
+func parseQuestion(data []byte, offset int) (Question, int, error) {
+
+	name, offset, err := parseQName(data, offset)
+	if err != nil {
+		return Question{}, -1, fmt.Errorf("error parsing qname: %w", err)
+	}
+	// read data by offset
+	qtype, err := readU16(data, offset)
+	if err != nil {
+		return Question{}, -1, fmt.Errorf("error parsing qtype: %w", err)
+	}
+	offset += 2
+	qclass, err := readU16(data, offset)
+	if err != nil {
+		return Question{}, -1, fmt.Errorf("error parsing qclass: %w", err)
+	}
+	offset += 2
+	
+	return Question{
+		Name:   name,
+		QType:  qtype,
+		QClass: qclass,
+	}, offset, nil
+
+}

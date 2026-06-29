@@ -1,6 +1,8 @@
 package main
 
-import "testing"
+import (
+	"testing"
+)
 
 func TestReadU16(t *testing.T) {
 	tests := []struct {
@@ -180,6 +182,117 @@ func TestParseQName(t *testing.T) {
 
 			if gotOff != tt.wantOff {
 				t.Errorf("parseQName() offset = %v, want %v", gotOff, tt.wantOff)
+			}
+		})
+	}
+}
+func TestParseQuestion(t *testing.T) {
+	tests := []struct {
+		name    string
+		data    []byte
+		offset  int
+		want    Question
+		wantOff int
+		wantErr bool
+	}{
+		{
+			name: "valid question www.example.com A IN",
+			data: []byte{
+				0x03, 'w', 'w', 'w',
+				0x07, 'e', 'x', 'a', 'm', 'p', 'l', 'e',
+				0x03, 'c', 'o', 'm',
+				0x00,
+				0x00, 0x01, // QTYPE = 1
+				0x00, 0x01, // QCLASS = 1
+			},
+			offset: 0,
+			want: Question{
+				Name:   "www.example.com",
+				QType:  1,
+				QClass: 1,
+			},
+			wantOff: 21,
+			wantErr: false,
+		},
+		{
+			name: "valid question with nonzero starting offset",
+			data: []byte{
+				0xaa, 0xbb, // pretend earlier bytes
+
+				0x03, 'w', 'w', 'w',
+				0x07, 'e', 'x', 'a', 'm', 'p', 'l', 'e',
+				0x03, 'c', 'o', 'm',
+				0x00,
+				0x00, 0x01, // QTYPE = 1
+				0x00, 0x01, // QCLASS = 1
+			},
+			offset: 2,
+			want: Question{
+				Name:   "www.example.com",
+				QType:  1,
+				QClass: 1,
+			},
+			wantOff: 23,
+			wantErr: false,
+		},
+		{
+			name: "short QTYPE returns error",
+			data: []byte{
+				0x03, 'w', 'w', 'w',
+				0x07, 'e', 'x', 'a', 'm', 'p', 'l', 'e',
+				0x03, 'c', 'o', 'm',
+				0x00,
+				0x00, // only 1 byte of QTYPE, need 2
+			},
+			offset:  0,
+			want:    Question{},
+			wantOff: -1,
+			wantErr: true,
+		},
+		{
+			name: "short QCLASS returns error",
+			data: []byte{
+				0x03, 'w', 'w', 'w',
+				0x07, 'e', 'x', 'a', 'm', 'p', 'l', 'e',
+				0x03, 'c', 'o', 'm',
+				0x00,
+				0x00, 0x01, // QTYPE complete
+				0x00, // only 1 byte of QCLASS, need 2
+			},
+			offset:  0,
+			want:    Question{},
+			wantOff: -1,
+			wantErr: true,
+		},
+		{
+			name: "bad qname returns error",
+			data: []byte{
+				0x03, 'w', 'w', // says length 3, only has 2 label bytes
+				0x00, 0x01,
+				0x00, 0x01,
+			},
+			offset:  0,
+			want:    Question{},
+			wantOff: -1,
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, gotOff, err := parseQuestion(tt.data, tt.offset)
+
+			if (err != nil) != tt.wantErr {
+				t.Errorf("parseQuestion() error = %v, wantErr %v", err, tt.wantErr)
+				return
+			}
+
+			if got != tt.want {
+				t.Errorf("parseQuestion() = %+v, want %+v", got, tt.want)
+			}
+
+			if gotOff != tt.wantOff {
+				t.Errorf("parseQuestion() offset = %v, want %v", gotOff, tt.wantOff)
 			}
 		})
 	}
