@@ -297,3 +297,170 @@ func TestParseQuestion(t *testing.T) {
 		})
 	}
 }
+
+func TestParseMessage(t *testing.T) {
+	tests := []struct {
+		name    string
+		data    []byte
+		want    Message
+		wantErr bool
+	}{
+		{
+			name: "valid DNS query message for www.example.com A IN",
+			data: []byte{
+				// Header: 12 bytes
+				0x12, 0x34, // ID = 0x1234 = 4660
+				0x01, 0x00, // Flags = RD
+				0x00, 0x01, // QDCount = 1
+				0x00, 0x00, // ANCount = 0
+				0x00, 0x00, // NSCount = 0
+				0x00, 0x00, // ARCount = 0
+
+				// Question
+				0x03, 'w', 'w', 'w',
+				0x07, 'e', 'x', 'a', 'm', 'p', 'l', 'e',
+				0x03, 'c', 'o', 'm',
+				0x00,
+
+				0x00, 0x01, // QTYPE = 1 = A
+				0x00, 0x01, // QCLASS = 1 = IN
+			},
+			want: Message{
+				Header: Header{
+					ID:      0x1234,
+					Flags:   0x0100,
+					QDCount: 1,
+					ANCount: 0,
+					NSCount: 0,
+					ARCount: 0,
+				},
+				Flags: Flags{
+					RD: true,
+				},
+				Question: Question{
+					Name:   "www.example.com",
+					QType:  1,
+					QClass: 1,
+				},
+			},
+			wantErr: false,
+		},
+		{
+			name: "short header returns error",
+			data: []byte{
+				0x12, 0x34,
+			},
+			want:    Message{},
+			wantErr: true,
+		},
+		{
+			name: "bad question missing qname terminator returns error",
+			data: []byte{
+				// Header
+				0x12, 0x34,
+				0x01, 0x00,
+				0x00, 0x01,
+				0x00, 0x00,
+				0x00, 0x00,
+				0x00, 0x00,
+
+				// Bad QNAME: missing final 0x00
+				0x03, 'w', 'w', 'w',
+				0x07, 'e', 'x', 'a', 'm', 'p', 'l', 'e',
+				0x03, 'c', 'o', 'm',
+
+				// QTYPE/QCLASS bytes exist, but parseQName should fail before them
+				0x00, 0x01,
+				0x00, 0x01,
+			},
+			want:    Message{},
+			wantErr: true,
+		},
+		{
+			name: "short QTYPE returns error",
+			data: []byte{
+				// Header
+				0x12, 0x34,
+				0x01, 0x00,
+				0x00, 0x01,
+				0x00, 0x00,
+				0x00, 0x00,
+				0x00, 0x00,
+
+				// QNAME
+				0x03, 'w', 'w', 'w',
+				0x07, 'e', 'x', 'a', 'm', 'p', 'l', 'e',
+				0x03, 'c', 'o', 'm',
+				0x00,
+
+				// Short QTYPE: only one byte
+				0x00,
+			},
+			want:    Message{},
+			wantErr: true,
+		},
+		{
+			name: "short QCLASS returns error",
+			data: []byte{
+				// Header
+				0x12, 0x34,
+				0x01, 0x00,
+				0x00, 0x01,
+				0x00, 0x00,
+				0x00, 0x00,
+				0x00, 0x00,
+
+				// QNAME
+				0x03, 'w', 'w', 'w',
+				0x07, 'e', 'x', 'a', 'm', 'p', 'l', 'e',
+				0x03, 'c', 'o', 'm',
+				0x00,
+
+				0x00, 0x01, // QTYPE complete
+
+				// Short QCLASS: only one byte
+				0x00,
+			},
+			want:    Message{},
+			wantErr: true,
+		},
+		{
+			name: "non-one QDCount returns error",
+			data: []byte{
+				// Header
+				0x12, 0x34,
+				0x01, 0x00,
+				0x00, 0x02, // QDCount = 2
+				0x00, 0x00,
+				0x00, 0x00,
+				0x00, 0x00,
+
+				// One Question only
+				0x03, 'w', 'w', 'w',
+				0x07, 'e', 'x', 'a', 'm', 'p', 'l', 'e',
+				0x03, 'c', 'o', 'm',
+				0x00,
+
+				0x00, 0x01,
+				0x00, 0x01,
+			},
+			want:    Message{},
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := parseMessage(tt.data)
+
+			if (err != nil) != tt.wantErr {
+				t.Errorf("parseMessage() error = %v, wantErr %v", err, tt.wantErr)
+				return
+			}
+
+			if got != tt.want {
+				t.Errorf("parseMessage() = %+v, want %+v", got, tt.want)
+			}
+		})
+	}
+}

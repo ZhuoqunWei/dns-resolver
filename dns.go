@@ -156,11 +156,41 @@ func parseQuestion(data []byte, offset int) (Question, int, error) {
 		return Question{}, -1, fmt.Errorf("error parsing qclass: %w", err)
 	}
 	offset += 2
-	
+
 	return Question{
 		Name:   name,
 		QType:  qtype,
 		QClass: qclass,
 	}, offset, nil
 
+}
+
+type Message struct {
+	Header   Header
+	Flags    Flags
+	Question Question
+}
+
+func parseMessage(data []byte) (Message, error) {
+	header, err := parseHeader(data)
+	if err != nil {
+		return Message{}, fmt.Errorf("parse header: %w", err)
+	}
+
+	if header.QDCount != 1 {
+		return Message{}, fmt.Errorf("expected exactly 1 question, got %d", header.QDCount)
+	}
+
+	flags := parseFlags(header.Flags)
+
+	question, _, err := parseQuestion(data, 12)
+	if err != nil {
+		return Message{}, fmt.Errorf("parse question: %w", err)
+	}
+
+	return Message{
+		Header:   header,
+		Flags:    flags,
+		Question: question,
+	}, nil
 }
