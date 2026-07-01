@@ -5,18 +5,18 @@ import (
 	"strings"
 )
 
+const (
+	HeaderSize = 12
+
+	TypeA   uint16 = 1
+	ClassIN uint16 = 1
+)
+
 func readU16(data []byte, offset int) (uint16, error) {
-	// Check if the offset is valid
-	if offset < 0 || offset >= len(data) {
-		return 0, fmt.Errorf("offset %d is out of bounds for data length %d", offset, len(data))
-	}
-	// Check if there are enough bytes to read
-	if len(data) < offset+2 {
+	if offset < 0 || offset+2 > len(data) {
 		return 0, fmt.Errorf("not enough bytes to read uint16 at offset %d", offset)
 	}
 
-	// Read two bytes and convert to uint16
-	// The first byte is the high byte, and the second byte is the low byte
 	return uint16(data[offset])<<8 | uint16(data[offset+1]), nil
 }
 
@@ -31,7 +31,7 @@ type Header struct {
 
 // parse 12 bytes dns header
 func parseHeader(data []byte) (Header, error) {
-	if len(data) < 12 {
+	if len(data) < HeaderSize {
 		return Header{}, fmt.Errorf("data too short to contain DNS header")
 	}
 
@@ -183,7 +183,7 @@ func parseMessage(data []byte) (Message, error) {
 
 	flags := parseFlags(header.Flags)
 
-	question, _, err := parseQuestion(data, 12)
+	question, _, err := parseQuestion(data, HeaderSize)
 	if err != nil {
 		return Message{}, fmt.Errorf("parse question: %w", err)
 	}
