@@ -1,37 +1,55 @@
 package main
 
-import "fmt"
+import (
+	"fmt"
+	"log"
+	"net"
+)
 
 func main() {
-	data := []byte{
-		// Header
-		0x12, 0x34, // ID
-		0x01, 0x00, // Flags: recursion desired
-		0x00, 0x01, // QDCOUNT: 1 question
-		0x00, 0x00, // ANCOUNT
-		0x00, 0x00, // NSCOUNT
-		0x00, 0x00, // ARCOUNT
 
-		// QNAME:
-		0x03, 'w', 'w', 'w',
-		0x07, 'e', 'x', 'a', 'm', 'p', 'l', 'e',
-		0x03, 'c', 'o', 'm',
-		0x00,
-
-		// QTYPE and QCLASS
-		0x00, 0x01, // QTYPE: A
-		0x00, 0x01, // QCLASS: IN
-	}
-
-	msg, err := parseMessage(data)
+	// UDP server
+	// 1. Choose the address the UDP server will listen on
+	addr, err := net.ResolveUDPAddr("udp", "127.0.0.1:8053")
 	if err != nil {
-		fmt.Println("parse error:", err)
-		return
+		log.Fatal(err)
 	}
 
-	fmt.Printf("ID: 0x%04x\n", msg.Header.ID)
-	fmt.Printf("RD: %t\n", msg.Flags.RD)
-	fmt.Printf("Question: %s\n", msg.Question.Name)
-	fmt.Printf("QType: %d\n", msg.Question.QType)
-	fmt.Printf("QClass: %d\n", msg.Question.QClass)
+	// 2. Start listening on UDP
+	conn, err := net.ListenUDP("udp", addr)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer conn.Close()
+
+	fmt.Println("DNS UDP server listening on 127.0.0.1:8053")
+
+	// 3. Create a buffer for incoming packets
+	buf := make([]byte, 512)
+
+	// 4. Keep server running forever
+	for {
+		n, remoteAddr, err := conn.ReadFromUDP(buf)
+		if err != nil {
+			fmt.Println("read error:", err)
+			continue
+		}
+		// print out bytes received
+		fmt.Println("Bytes received:", n)
+		packet := buf[:n]
+
+		msg, err := parseMessage(packet)
+		if err != nil {
+			fmt.Println("parse error from", remoteAddr, ":", err)
+			continue
+		}
+
+		fmt.Println("----- DNS Query Received -----")
+		fmt.Println("From:", remoteAddr)
+		fmt.Printf("ID: 0x%04x\n", msg.Header.ID)
+		fmt.Printf("RD: %t\n", msg.Flags.RD)
+		fmt.Printf("Question: %s\n", msg.Question.Name)
+		fmt.Printf("QType: %d\n", msg.Question.QType)
+		fmt.Printf("QClass: %d\n", msg.Question.QClass)
+	}
 }
