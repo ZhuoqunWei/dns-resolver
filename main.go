@@ -51,5 +51,22 @@ func main() {
 		fmt.Printf("Question: %s\n", msg.Question.Name)
 		fmt.Printf("QType: %d\n", msg.Question.QType)
 		fmt.Printf("QClass: %d\n", msg.Question.QClass)
+
+		response, err := buildEmptyResponse(packet)
+		if err != nil {
+			fmt.Println("response build error:", err)
+			continue
+		}
+
+		_, err = conn.WriteToUDP(response, remoteAddr)
+		if err != nil {
+			fmt.Println("write error:", err)
+			continue
+		}
+
+		fmt.Println("Sent empty DNS response")
+
+		// write out a query response
+		// modify QR, QDCOUNT, ANCOUNT, other parts stay the same 
 	}
 }
