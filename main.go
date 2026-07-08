@@ -46,13 +46,14 @@ func main() {
 
 		fmt.Println("----- DNS Query Received -----")
 		fmt.Println("From:", remoteAddr)
+		fmt.Println("Bytes received:", n)
 		fmt.Printf("ID: 0x%04x\n", msg.Header.ID)
 		fmt.Printf("RD: %t\n", msg.Flags.RD)
 		fmt.Printf("Question: %s\n", msg.Question.Name)
 		fmt.Printf("QType: %d\n", msg.Question.QType)
 		fmt.Printf("QClass: %d\n", msg.Question.QClass)
 
-		response, err := buildEmptyResponse(packet)
+		response, err := buildAResponse(packet)
 		if err != nil {
 			fmt.Println("response build error:", err)
 			continue
@@ -64,9 +65,6 @@ func main() {
 			continue
 		}
 
-		fmt.Println("Sent empty DNS response")
-
-		// write out a query response
-		// modify QR, QDCOUNT, ANCOUNT, other parts stay the same 
+		fmt.Println("Sent DNS A response")
 	}
 }
