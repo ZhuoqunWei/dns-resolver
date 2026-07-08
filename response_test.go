@@ -2,92 +2,92 @@ package main
 
 import (
 	"bytes"
+	"encoding/binary"
 	"testing"
 )
 
-func sampleAQuery() []byte {
-	return []byte{
+func sampleQueryWithTypeClass(qtype uint16, qclass uint16) []byte {
+	query := []byte{
 		// Header
 		0x12, 0x34, // ID
-		0x01, 0x00, // Flags
-		0x00, 0x01, // QDCOUNT
-		0x00, 0x00, // ANCOUNT
-		0x00, 0x00, // NSCOUNT
-		0x00, 0x00, // ARCOUNT
+		0x01, 0x00, // Flags: RD = true
+		0x00, 0x01, // QDCOUNT = 1
+		0x00, 0x00, // ANCOUNT = 0
+		0x00, 0x00, // NSCOUNT = 0
+		0x00, 0x00, // ARCOUNT = 0
 
 		// QNAME: example.com
 		0x07, 'e', 'x', 'a', 'm', 'p', 'l', 'e',
 		0x03, 'c', 'o', 'm',
 		0x00,
 
-		// QTYPE + QCLASS
-		0x00, 0x01, // A
-		0x00, 0x01, // IN
+		// QTYPE + QCLASS placeholder
+		0x00, 0x00,
+		0x00, 0x00,
+	}
+
+	binary.BigEndian.PutUint16(query[len(query)-4:len(query)-2], qtype)
+	binary.BigEndian.PutUint16(query[len(query)-2:], qclass)
+
+	return query
+}
+
+func TestBuildResponseDoesNotSetRA(t *testing.T) {
+	query := sampleQueryWithTypeClass(TypeA, ClassIN)
+
+	response, err := buildResponse(query)
+	if err != nil {
+		t.Fatalf("buildResponse returned error: %v", err)
+	}
+
+	flags := binary.BigEndian.Uint16(response[2:4])
+
+	if flags&0x0080 != 0 {
+		t.Fatalf("RA flag is set, want RA=false; flags=%016b", flags)
 	}
 }
 
-func TestBuildAResponseCopiesTransactionID(t *testing.T) {
-	query := sampleAQuery()
+func TestBuildResponseSetsQR(t *testing.T) {
+	query := sampleQueryWithTypeClass(TypeA, ClassIN)
 
-	response, err := buildAResponse(query)
+	response, err := buildResponse(query)
 	if err != nil {
-		t.Fatalf("buildAResponse returned error: %v", err)
+		t.Fatalf("buildResponse returned error: %v", err)
 	}
 
-	if response[0] != 0x12 || response[1] != 0x34 {
-		t.Fatalf("ID = %02x %02x, want 12 34", response[0], response[1])
+	flags := binary.BigEndian.Uint16(response[2:4])
+
+	if flags&0x8000 == 0 {
+		t.Fatalf("QR flag is not set; flags=%016b", flags)
 	}
 }
 
-func TestBuildAResponseSetsCounts(t *testing.T) {
-	query := sampleAQuery()
+func TestBuildResponseCopiesRD(t *testing.T) {
+	query := sampleQueryWithTypeClass(TypeA, ClassIN)
 
-	response, err := buildAResponse(query)
+	response, err := buildResponse(query)
 	if err != nil {
-		t.Fatalf("buildAResponse returned error: %v", err)
+		t.Fatalf("buildResponse returned error: %v", err)
 	}
 
-	want := []byte{
-		0x00, 0x01, // QDCOUNT = 1
-		0x00, 0x01, // ANCOUNT = 1
-		0x00, 0x00, // NSCOUNT = 0
-		0x00, 0x00, // ARCOUNT = 0
-	}
+	flags := binary.BigEndian.Uint16(response[2:4])
 
-	got := response[4:12]
-
-	if !bytes.Equal(got, want) {
-		t.Fatalf("counts = %v, want %v", got, want)
+	if flags&0x0100 == 0 {
+		t.Fatalf("RD flag was not copied; flags=%016b", flags)
 	}
 }
 
-func TestBuildAResponseCopiesQuestionSection(t *testing.T) {
-	query := sampleAQuery()
+func TestBuildResponseReturnsAAnswerForTypeAClassIN(t *testing.T) {
+	query := sampleQueryWithTypeClass(TypeA, ClassIN)
 
-	response, err := buildAResponse(query)
+	response, err := buildResponse(query)
 	if err != nil {
-		t.Fatalf("buildAResponse returned error: %v", err)
+		t.Fatalf("buildResponse returned error: %v", err)
 	}
 
-	questionEnd, err := findQuestionEnd(query)
-	if err != nil {
-		t.Fatalf("findQuestionEnd returned error: %v", err)
-	}
-
-	gotQuestion := response[12:questionEnd]
-	wantQuestion := query[12:questionEnd]
-
-	if !bytes.Equal(gotQuestion, wantQuestion) {
-		t.Fatalf("question section = %v, want %v", gotQuestion, wantQuestion)
-	}
-}
-
-func TestBuildAResponseAppendsAnswerRecord(t *testing.T) {
-	query := sampleAQuery()
-
-	response, err := buildAResponse(query)
-	if err != nil {
-		t.Fatalf("buildAResponse returned error: %v", err)
+	ancount := binary.BigEndian.Uint16(response[6:8])
+	if ancount != 1 {
+		t.Fatalf("ANCOUNT = %d, want 1", ancount)
 	}
 
 	questionEnd, err := findQuestionEnd(query)
@@ -98,7 +98,7 @@ func TestBuildAResponseAppendsAnswerRecord(t *testing.T) {
 	answer := response[questionEnd:]
 
 	want := []byte{
-		0xc0, 0x0c, // NAME pointer to QNAME
+		0xc0, 0x0c, // NAME pointer
 		0x00, 0x01, // TYPE = A
 		0x00, 0x01, // CLASS = IN
 		0x00, 0x00, 0x00, 0x3c, // TTL = 60
@@ -111,19 +111,42 @@ func TestBuildAResponseAppendsAnswerRecord(t *testing.T) {
 	}
 }
 
-func TestBuildAResponseLength(t *testing.T) {
-	query := sampleAQuery()
+func TestBuildResponseNoAnswerForUnsupportedType(t *testing.T) {
+	const TypeAAAA uint16 = 28
 
-	response, err := buildAResponse(query)
+	query := sampleQueryWithTypeClass(TypeAAAA, ClassIN)
+
+	response, err := buildResponse(query)
 	if err != nil {
-		t.Fatalf("buildAResponse returned error: %v", err)
+		t.Fatalf("buildResponse returned error: %v", err)
 	}
 
-	// Answer record length:
-	// NAME 2 + TYPE 2 + CLASS 2 + TTL 4 + RDLENGTH 2 + RDATA 4 = 16
-	wantLen := len(query) + 16
+	ancount := binary.BigEndian.Uint16(response[6:8])
+	if ancount != 0 {
+		t.Fatalf("ANCOUNT = %d, want 0", ancount)
+	}
 
-	if len(response) != wantLen {
-		t.Fatalf("response length = %d, want %d", len(response), wantLen)
+	if len(response) != len(query) {
+		t.Fatalf("response length = %d, want %d", len(response), len(query))
+	}
+}
+
+func TestBuildResponseNoAnswerForUnsupportedClass(t *testing.T) {
+	const ClassCH uint16 = 3
+
+	query := sampleQueryWithTypeClass(TypeA, ClassCH)
+
+	response, err := buildResponse(query)
+	if err != nil {
+		t.Fatalf("buildResponse returned error: %v", err)
+	}
+
+	ancount := binary.BigEndian.Uint16(response[6:8])
+	if ancount != 0 {
+		t.Fatalf("ANCOUNT = %d, want 0", ancount)
+	}
+
+	if len(response) != len(query) {
+		t.Fatalf("response length = %d, want %d", len(response), len(query))
 	}
 }

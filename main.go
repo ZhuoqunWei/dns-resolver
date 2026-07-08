@@ -53,7 +53,7 @@ func main() {
 		fmt.Printf("QType: %d\n", msg.Question.QType)
 		fmt.Printf("QClass: %d\n", msg.Question.QClass)
 
-		response, err := buildAResponse(packet)
+		response, err := buildResponse(packet)
 		if err != nil {
 			fmt.Println("response build error:", err)
 			continue
@@ -64,7 +64,5 @@ func main() {
 			fmt.Println("write error:", err)
 			continue
 		}
-
-		fmt.Println("Sent DNS A response")
 	}
 }
