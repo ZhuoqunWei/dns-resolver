@@ -1,12 +1,15 @@
 # Go DNS Resolver
 
-A small DNS parser written in Go as part of a systems/networking learning project.
+A small DNS server written in Go as part of a systems/networking learning project.
 
-The current version focuses on parsing a basic DNS query message from raw bytes. It does not send or receive network packets yet. The goal of this stage is to understand the DNS wire format before building UDP networking or DNS responses.
+The current version can parse basic DNS query messages from raw bytes, listen for UDP DNS queries on `127.0.0.1:8053`, and return a minimal DNS response. For supported `A / IN` queries, it returns a hardcoded IPv4 address: `1.2.3.4`.
 
-## Current Parser Behavior
+This is not a recursive resolver yet. It does not forward queries to upstream DNS servers, perform caching, or dynamically resolve real domain names.
 
-The parser currently supports:
+
+## Current Server Behavior
+
+The server currently supports:
 
 * Reading two bytes safely as a `uint16`
 * Parsing the fixed-size DNS header
@@ -14,6 +17,10 @@ The parser currently supports:
 * Parsing a DNS QNAME from length-prefixed labels
 * Parsing QTYPE and QCLASS
 * Parsing one complete DNS query message with exactly one question
+* Listening for UDP DNS queries on 127.0.0.1:8053
+* Building a valid DNS response packet
+* Returning a hardcoded A record for TypeA / ClassIN
+* Returning a valid response with ANCOUNT = 0 for unsupported query types or classes
 * Returning clear errors for malformed or truncated input
 
 The main parser function is:
@@ -226,66 +233,134 @@ Question.QType = 1
 Question.QClass = 1
 ```
 
+
+
+## Running the UDP DNS Server
+
+Start the server:
+```
+go run .
+```
+The server listens on:
+
+```
+127.0.0.1:8053
+```
+
+`Port 8053` is used instead of port `53` because port `53` often requires elevated permissions, and port `5353` may already be used by system services such as mDNS.
+```
+Expected startup output:
+
+DNS UDP server listening on `127.0.0.1:8053`
+```
+
+## Demo: A Query
+
+Run:
+```
+dig +noedns @127.0.0.1 -p 8053 example.com AAAA
+```
+This asks the local DNS server for the IPv4 address of example.com.
+
+Expected behavior:
+```
+;; ->>HEADER<<- opcode: QUERY, status: NOERROR
+;; flags: qr rd; QUERY: 1, ANSWER: 1, AUTHORITY: 0, ADDITIONAL: 0
+;; WARNING: recursion requested but not available
+
+;; QUESTION SECTION:
+;example.com.                   IN      A
+
+;; ANSWER SECTION:
+example.com.            60      IN      A       1.2.3.4
+```
+The A response is currently hardcoded:
+
+```
+example.com.  60  IN  A  1.2.3.4
+```
+This does not mean the server performed a real DNS lookup. It means the server recognized a supported TypeA / ClassIN query and returned the hardcoded IPv4 address `1.2.3.4`.
+
+## Demo: AAAA Query
+
+Run:
+
+`dig +noedns @127.0.0.1 -p 8053 example.com AAAA`
+
+This asks the local DNS server for the IPv6 address of example.com.
+
+Expected behavior:
+```
+;; ->>HEADER<<- opcode: QUERY, status: NOERROR
+;; flags: qr rd; QUERY: 1, ANSWER: 0, AUTHORITY: 0, ADDITIONAL: 0
+;; WARNING: recursion requested but not available
+
+;; QUESTION SECTION:
+;example.com.                   IN      AAAA
+```
+AAAA queries are unsupported for now, so the server returns a valid DNS response with:
+
+ANSWER: `0`
+
+This confirms that unsupported query types do not receive fake answers.
+
+## Response Behavior
+
+Current response behavior:
+```
+A / IN        -> ANSWER: 1 with 1.2.3.4
+AAAA / IN     -> valid response with ANSWER: 0
+unsupported   -> valid response with ANSWER: 0
+```
+The response uses the same transaction ID as the query, sets QR = true, copies RD from the query, and sets RA = false.
+
+The answer section uses DNS name compression:
+
+`0xc00c`
+
+This points back to byte offset 12, where the original QNAME starts in the question section.
+
 ## Tested Malformed Cases
 
-The test suite checks that the parser handles invalid input safely.
+The test suite checks that the parser and response builder handle invalid input safely.
 
 Tested malformed cases include:
-
-* Short DNS header
-* `QDCOUNT = 0`
-* `QDCOUNT = 2`
-* Truncated QNAME label
-* Missing QNAME terminating `00`
-* Short QTYPE
-* Short QCLASS
-* Bad QNAME passed through `parseMessage`
+- Short DNS header
+- `QDCOUNT = 0`
+- `QDCOUNT = 2`
+- Truncated QNAME label
+- Missing QNAME terminating `00`
+- Short QTYPE
+- Short QCLASS
+- Bad QNAME passed through `parseMessage`
+- Response builder rejects malformed queries
+- Response builder does not set `RA`
+- Response builder returns an answer only for `TypeA / ClassIN`
+- Response builder returns `ANCOUNT = 0` for unsupported query types or classes
 
 ## Current Limitations
 
 This project intentionally does not support everything yet.
 
-Current limitations:
+**Current limitations:**
 
-* Supports one question only
-* Does not support DNS compression pointers yet
-* Does not listen on UDP yet
-* Does not build DNS responses yet
-* Does not perform recursive resolution yet
-* Does not implement caching yet
+- Supports one question only
+- Does not support compressed QNAMEs in incoming queries yet
+- Does not support EDNS yet; use `+noedns` with `dig`
+- Does not perform recursive resolution yet
+- Does not forward queries to upstream DNS servers yet
+- Does not implement caching yet
+- Returns a hardcoded `1.2.3.4` response for supported `A / IN` queries
+- Does not dynamically match domain names yet
 
-These limitations are intentional because the current milestone is focused on understanding and testing DNS query parsing.
+These limitations are intentional because the current milestone is focused on understanding DNS query parsing, UDP packet handling, and minimal DNS response construction.
 
 ## Running Tests
 
-Run:
+**Run:**
 
-```bash
-go test -count=1 ./...
-```
+`go test -count=1 ./...`
 
 Expected result:
 
-```text
-ok      github.com/zhuoqunwei/dns-resolver
-```
-
-## Project Roadmap
-
-Current completed milestone:
-
-```text
-Raw DNS query bytes -> Header -> Flags -> Question
-```
-
-Next planned milestones:
-
-```text
-1. Document and demo parser behavior
-2. Add UDP listener
-3. Receive a real query from dig
-4. Parse real query bytes
-5. Build a minimal DNS response
-6. Return a hardcoded A record
-7. Add logging and additional malformed packet handling
-```
+`ok      github.com/zhuoqunwei/dns-resolver`
