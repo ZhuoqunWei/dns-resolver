@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/binary"
 	"fmt"
 	"log"
 	"net"
@@ -34,8 +35,6 @@ func main() {
 			fmt.Println("read error:", err)
 			continue
 		}
-		// print out bytes received
-		fmt.Println("Bytes received:", n)
 		packet := buf[:n]
 
 		msg, err := parseMessage(packet)
@@ -44,20 +43,25 @@ func main() {
 			continue
 		}
 
-		fmt.Println("----- DNS Query Received -----")
-		fmt.Println("From:", remoteAddr)
-		fmt.Println("Bytes received:", n)
-		fmt.Printf("ID: 0x%04x\n", msg.Header.ID)
-		fmt.Printf("RD: %t\n", msg.Flags.RD)
-		fmt.Printf("Question: %s\n", msg.Question.Name)
-		fmt.Printf("QType: %d\n", msg.Question.QType)
-		fmt.Printf("QClass: %d\n", msg.Question.QClass)
-
 		response, err := buildResponse(packet)
 		if err != nil {
 			fmt.Println("response build error:", err)
 			continue
 		}
+
+		responseStatus := "empty response"
+		if binary.BigEndian.Uint16(response[6:8]) > 0 {
+			responseStatus = "answer returned"
+		}
+
+		fmt.Println("----- DNS Query -----")
+		fmt.Println("From:", remoteAddr)
+		fmt.Println("Bytes received:", n)
+		fmt.Printf("ID: 0x%04x\n", msg.Header.ID)
+		fmt.Printf("Question: %s\n", msg.Question.Name)
+		fmt.Printf("QType: %d\n", msg.Question.QType)
+		fmt.Printf("QClass: %d\n", msg.Question.QClass)
+		fmt.Println("Response:", responseStatus)
 
 		_, err = conn.WriteToUDP(response, remoteAddr)
 		if err != nil {
