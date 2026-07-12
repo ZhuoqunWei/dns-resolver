@@ -18,8 +18,14 @@ func buildResponse(query []byte) ([]byte, error) {
 	qtype := binary.BigEndian.Uint16(query[questionEnd-4 : questionEnd-2])
 	qclass := binary.BigEndian.Uint16(query[questionEnd-2 : questionEnd])
 
-	hasAnswer := qtype == TypeA && qclass == ClassIN
+	question, _, err := parseQuestion(query, HeaderSize)
+	if err != nil {
+		return nil, fmt.Errorf("parse question: %w", err)
+	}
 
+	hasAnswer := qtype == TypeA &&
+		qclass == ClassIN &&
+		question.Name == "example.com"
 	response := make([]byte, 0)
 
 	// ID: copy from query
@@ -59,7 +65,7 @@ func buildResponse(query []byte) ([]byte, error) {
 	response = append(response, 0x00, 0x00)
 
 	// Question section
-	response = append(response, query[12:questionEnd]...)
+	response = append(response, query[HeaderSize:questionEnd]...)
 
 	if !hasAnswer {
 		return response, nil
@@ -88,6 +94,7 @@ func buildResponse(query []byte) ([]byte, error) {
 	response = append(response, 1, 2, 3, 4)
 
 	return response, nil
+
 }
 
 func findQuestionEnd(query []byte) (int, error) {

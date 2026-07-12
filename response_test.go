@@ -32,6 +32,27 @@ func sampleQueryWithTypeClass(qtype uint16, qclass uint16) []byte {
 	return query
 }
 
+func sampleOtherDomainAQuery() []byte {
+	return []byte{
+		// Header
+		0x12, 0x34, // ID
+		0x01, 0x00, // Flags: RD = true
+		0x00, 0x01, // QDCOUNT = 1
+		0x00, 0x00, // ANCOUNT = 0
+		0x00, 0x00, // NSCOUNT = 0
+		0x00, 0x00, // ARCOUNT = 0
+
+		// QNAME: other.com
+		0x05, 'o', 't', 'h', 'e', 'r',
+		0x03, 'c', 'o', 'm',
+		0x00,
+
+		// QTYPE: A, QCLASS: IN
+		0x00, 0x01,
+		0x00, 0x01,
+	}
+}
+
 func TestBuildResponseDoesNotSetRA(t *testing.T) {
 	query := sampleQueryWithTypeClass(TypeA, ClassIN)
 
@@ -108,6 +129,24 @@ func TestBuildResponseReturnsAAnswerForTypeAClassIN(t *testing.T) {
 
 	if !bytes.Equal(answer, want) {
 		t.Fatalf("answer = %v, want %v", answer, want)
+	}
+}
+
+func TestBuildResponseNoAnswerForUnknownDomain(t *testing.T) {
+	query := sampleOtherDomainAQuery()
+
+	response, err := buildResponse(query)
+	if err != nil {
+		t.Fatalf("buildResponse returned error: %v", err)
+	}
+
+	ancount := binary.BigEndian.Uint16(response[6:8])
+	if ancount != 0 {
+		t.Fatalf("ANCOUNT = %d, want 0", ancount)
+	}
+
+	if !bytes.Equal(response[HeaderSize:], query[HeaderSize:]) {
+		t.Fatalf("response question = %v, want %v", response[HeaderSize:], query[HeaderSize:])
 	}
 }
 
