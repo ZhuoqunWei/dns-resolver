@@ -6,7 +6,8 @@ import (
 )
 
 var records = map[string][4]byte{
-	"example.com": [4]byte{1, 2, 3, 4},
+    "example.com": {1, 2, 3, 4},
+    "test.local":  {5, 6, 7, 8},
 }
 
 func buildResponse(query []byte) ([]byte, error) {

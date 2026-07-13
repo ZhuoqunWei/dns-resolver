@@ -53,6 +53,27 @@ func sampleOtherDomainAQuery() []byte {
 	}
 }
 
+func sampleTestLocalAQuery() []byte {
+	return []byte{
+		// Header
+		0x12, 0x34, // ID
+		0x01, 0x00, // Flags: RD = true
+		0x00, 0x01, // QDCOUNT = 1
+		0x00, 0x00, // ANCOUNT = 0
+		0x00, 0x00, // NSCOUNT = 0
+		0x00, 0x00, // ARCOUNT = 0
+
+		// QNAME: test.local
+		0x04, 't', 'e', 's', 't',
+		0x05, 'l', 'o', 'c', 'a', 'l',
+		0x00,
+
+		// QTYPE: A, QCLASS: IN
+		0x00, 0x01,
+		0x00, 0x01,
+	}
+}
+
 func TestBuildResponseDoesNotSetRA(t *testing.T) {
 	query := sampleQueryWithTypeClass(TypeA, ClassIN)
 
@@ -125,6 +146,39 @@ func TestBuildResponseReturnsAAnswerForTypeAClassIN(t *testing.T) {
 		0x00, 0x00, 0x00, 0x3c, // TTL = 60
 		0x00, 0x04, // RDLENGTH = 4
 		1, 2, 3, 4, // RDATA
+	}
+
+	if !bytes.Equal(answer, want) {
+		t.Fatalf("answer = %v, want %v", answer, want)
+	}
+}
+
+func TestBuildResponseReturnsConfiguredTestLocalRecord(t *testing.T) {
+	query := sampleTestLocalAQuery()
+
+	response, err := buildResponse(query)
+	if err != nil {
+		t.Fatalf("buildResponse returned error: %v", err)
+	}
+
+	ancount := binary.BigEndian.Uint16(response[6:8])
+	if ancount != 1 {
+		t.Fatalf("ANCOUNT = %d, want 1", ancount)
+	}
+
+	questionEnd, err := findQuestionEnd(query)
+	if err != nil {
+		t.Fatalf("findQuestionEnd returned error: %v", err)
+	}
+
+	answer := response[questionEnd:]
+	want := []byte{
+		0xc0, 0x0c, // NAME pointer
+		0x00, 0x01, // TYPE = A
+		0x00, 0x01, // CLASS = IN
+		0x00, 0x00, 0x00, 0x3c, // TTL = 60
+		0x00, 0x04, // RDLENGTH = 4
+		5, 6, 7, 8, // RDATA
 	}
 
 	if !bytes.Equal(answer, want) {
