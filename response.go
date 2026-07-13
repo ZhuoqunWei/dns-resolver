@@ -5,6 +5,10 @@ import (
 	"fmt"
 )
 
+var records = map[string][4]byte{
+	"example.com": [4]byte{1, 2, 3, 4},
+}
+
 func buildResponse(query []byte) ([]byte, error) {
 	if len(query) < 12 {
 		return nil, fmt.Errorf("query too short")
@@ -23,9 +27,11 @@ func buildResponse(query []byte) ([]byte, error) {
 		return nil, fmt.Errorf("parse question: %w", err)
 	}
 
+	rData, exists := records[question.Name]
+
 	hasAnswer := qtype == TypeA &&
 		qclass == ClassIN &&
-		question.Name == "example.com"
+		exists
 	response := make([]byte, 0)
 
 	// ID: copy from query
@@ -90,8 +96,8 @@ func buildResponse(query []byte) ([]byte, error) {
 	// RDLENGTH = 4
 	response = append(response, 0x00, 0x04)
 
-	// RDATA = 1.2.3.4
-	response = append(response, 1, 2, 3, 4)
+	// RDATA = configured IPv4 address
+	response = append(response, rData[:]...)
 
 	return response, nil
 
