@@ -2,7 +2,7 @@
 
 A small DNS server written in Go as part of a systems/networking learning project.
 
-The current version can parse basic DNS query messages from raw bytes, listen for UDP DNS queries on `127.0.0.1:8053`, and return a minimal DNS response. For supported `A / IN` queries, it returns a hardcoded IPv4 address: `1.2.3.4`.
+The current version can parse basic DNS query messages from raw bytes, listen for UDP DNS queries on `127.0.0.1:8053`, and return a minimal DNS response. For configured `A / IN` queries, it returns the matching IPv4 address from an in-memory record map.
 
 This is not a recursive resolver yet. It does not forward queries to upstream DNS servers, perform caching, or dynamically resolve real domain names.
 
@@ -19,8 +19,9 @@ The server currently supports:
 * Parsing one complete DNS query message with exactly one question
 * Listening for UDP DNS queries on 127.0.0.1:8053
 * Building a valid DNS response packet
-* Returning a hardcoded A record for TypeA / ClassIN
-* Returning a valid response with ANCOUNT = 0 for unsupported query types or classes
+* Returning configured A records for TypeA / ClassIN
+* Returning NXDOMAIN for names that are not configured
+* Returning a valid response with ANCOUNT = 0 for unsupported query types or classes on configured names
 * Returning clear errors for malformed or truncated input
 
 The main parser function is:
@@ -258,7 +259,7 @@ DNS UDP server listening on `127.0.0.1:8053`
 
 Run:
 ```
-dig +noedns @127.0.0.1 -p 8053 example.com AAAA
+dig +noedns @127.0.0.1 -p 8053 example.com A
 ```
 This asks the local DNS server for the IPv4 address of example.com.
 
@@ -274,12 +275,12 @@ Expected behavior:
 ;; ANSWER SECTION:
 example.com.            60      IN      A       1.2.3.4
 ```
-The A response is currently hardcoded:
+The A response is currently configured in the in-memory record map:
 
 ```
 example.com.  60  IN  A  1.2.3.4
 ```
-This does not mean the server performed a real DNS lookup. It means the server recognized a supported TypeA / ClassIN query and returned the hardcoded IPv4 address `1.2.3.4`.
+This does not mean the server performed a real DNS lookup. It means the server found `example.com` in its configured records and returned the matching IPv4 address.
 
 ## Demo: AAAA Query
 
@@ -308,11 +309,12 @@ This confirms that unsupported query types do not receive fake answers.
 
 Current response behavior:
 ```
-A / IN        -> ANSWER: 1 with 1.2.3.4
-AAAA / IN     -> valid response with ANSWER: 0
-unsupported   -> valid response with ANSWER: 0
+example.com A      -> NOERROR, ANSWER: 1, 1.2.3.4
+test.local A       -> NOERROR, ANSWER: 1, 5.6.7.8
+other.com A        -> NXDOMAIN, ANSWER: 0
+example.com AAAA   -> NOERROR, ANSWER: 0
 ```
-The response uses the same transaction ID as the query, sets QR = true, copies RD from the query, and sets RA = false.
+An unknown name returns NXDOMAIN. A configured name queried for an unsupported record type returns NOERROR with an empty answer section. Every response uses the same transaction ID as the query, sets QR = true, copies RD from the query, and sets RA = false.
 
 The answer section uses DNS name compression:
 
@@ -335,8 +337,9 @@ Tested malformed cases include:
 - Bad QNAME passed through `parseMessage`
 - Response builder rejects malformed queries
 - Response builder does not set `RA`
-- Response builder returns an answer only for `TypeA / ClassIN`
-- Response builder returns `ANCOUNT = 0` for unsupported query types or classes
+- Response builder returns configured answers only for `TypeA / ClassIN`
+- Response builder returns NXDOMAIN for unknown names
+- Response builder returns NOERROR with `ANCOUNT = 0` for unsupported query types on configured names
 
 ## Current Limitations
 
@@ -350,8 +353,7 @@ This project intentionally does not support everything yet.
 - Does not perform recursive resolution yet
 - Does not forward queries to upstream DNS servers yet
 - Does not implement caching yet
-- Returns a hardcoded `1.2.3.4` response for supported `A / IN` queries
-- Does not dynamically match domain names yet
+- Stores A records in a hardcoded in-memory map rather than an external configuration file
 
 These limitations are intentional because the current milestone is focused on understanding DNS query parsing, UDP packet handling, and minimal DNS response construction.
 
