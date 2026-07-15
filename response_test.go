@@ -186,7 +186,7 @@ func TestBuildResponseReturnsConfiguredTestLocalRecord(t *testing.T) {
 	}
 }
 
-func TestBuildResponseNoAnswerForUnknownDomain(t *testing.T) {
+func TestBuildResponseReturnsNXDOMAINForUnknownDomain(t *testing.T) {
 	query := sampleOtherDomainAQuery()
 
 	response, err := buildResponse(query)
@@ -197,6 +197,12 @@ func TestBuildResponseNoAnswerForUnknownDomain(t *testing.T) {
 	ancount := binary.BigEndian.Uint16(response[6:8])
 	if ancount != 0 {
 		t.Fatalf("ANCOUNT = %d, want 0", ancount)
+	}
+
+	flags := binary.BigEndian.Uint16(response[2:4])
+	rcode := flags & 0x000f
+	if rcode != rCodeNXDomain {
+		t.Fatalf("RCODE = %d, want %d (NXDOMAIN)", rcode, rCodeNXDomain)
 	}
 
 	if !bytes.Equal(response[HeaderSize:], query[HeaderSize:]) {
@@ -217,6 +223,12 @@ func TestBuildResponseNoAnswerForUnsupportedType(t *testing.T) {
 	ancount := binary.BigEndian.Uint16(response[6:8])
 	if ancount != 0 {
 		t.Fatalf("ANCOUNT = %d, want 0", ancount)
+	}
+
+	flags := binary.BigEndian.Uint16(response[2:4])
+	rcode := flags & 0x000f
+	if rcode != 0 {
+		t.Fatalf("RCODE = %d, want 0 (NOERROR)", rcode)
 	}
 
 	if len(response) != len(query) {

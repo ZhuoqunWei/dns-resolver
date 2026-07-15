@@ -5,9 +5,11 @@ import (
 	"fmt"
 )
 
+const rCodeNXDomain uint16 = 3
+
 var records = map[string][4]byte{
-    "example.com": {1, 2, 3, 4},
-    "test.local":  {5, 6, 7, 8},
+	"example.com": {1, 2, 3, 4},
+	"test.local":  {5, 6, 7, 8},
 }
 
 func buildResponse(query []byte) ([]byte, error) {
@@ -42,12 +44,15 @@ func buildResponse(query []byte) ([]byte, error) {
 	// QR = 1 response
 	// RD = copied from query
 	// RA = 0 because we do not support recursion yet
-	// RCODE = 0
+	// RCODE = NXDOMAIN when the queried name is not configured
 	var flags uint16 = 0x8000 // QR = 1
 
 	queryFlags := binary.BigEndian.Uint16(query[2:4])
 	if queryFlags&0x0100 != 0 {
 		flags |= 0x0100 // copy RD
+	}
+	if !exists {
+		flags |= rCodeNXDomain
 	}
 
 	flagsBytes := make([]byte, 2)
