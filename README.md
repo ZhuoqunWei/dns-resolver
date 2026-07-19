@@ -1,5 +1,7 @@
 # Go DNS Resolver
 
+[![CI](https://github.com/ZhuoqunWei/dns-resolver/actions/workflows/ci.yml/badge.svg)](https://github.com/ZhuoqunWei/dns-resolver/actions/workflows/ci.yml)
+
 A small DNS server written in Go as part of a systems/networking learning project.
 
 The current version can parse basic DNS query messages from raw bytes, listen for UDP DNS queries on `127.0.0.1:8053`, and return a minimal DNS response. For configured `A / IN` queries, it returns the matching IPv4 address from an in-memory record map.
