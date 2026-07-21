@@ -4,7 +4,7 @@
 
 This project is a small DNS server written in Go to learn DNS wire-format parsing, UDP networking, and DNS response construction.
 
-It is not a recursive resolver. It listens locally on `127.0.0.1:8053`, parses one DNS question, and returns a hardcoded `1.2.3.4` answer only for `A` queries in the `IN` class. Other query types receive a valid response with no answer records.
+It is not a recursive resolver. It listens locally on `127.0.0.1:8053`, parses one DNS question, and returns configured IPv4 answers for `A` queries in the `IN` class. Unknown names return `NXDOMAIN`, while unsupported types on configured names receive a valid response with no answer records.
 
 ## Request and Response Flow
 
@@ -23,6 +23,7 @@ dns.go: parseMessage
   v
 Message { Header, Flags, Question }
   |
+  | parsed message, original query, and records
   v
 response.go: buildResponse
   |
@@ -78,16 +79,17 @@ The parser returns errors for truncated or malformed packets. `main.go` logs the
 
 After a query is successfully parsed, `main.go` calls `buildResponse` in `response.go`.
 
-`buildResponse` first finds the end of the original question section. It uses that location to read the query type and class, then constructs a new DNS response:
+`buildResponse` receives the parsed `Message` and the record map from `main.go`. It uses the original query only to find and copy the question section, then constructs a new DNS response from the parsed fields:
 
 - Copies the transaction ID from the query so `dig` can match the reply to its request.
 - Sets `QR = 1` to mark the packet as a response.
 - Copies `RD` from the query.
 - Leaves `RA = 0` because this server does not provide recursive resolution.
 - Sets `QDCOUNT = 1` and copies the original question into the response.
-- Sets `ANCOUNT = 1` only for `A / IN`; otherwise it sets `ANCOUNT = 0`.
+- Sets `ANCOUNT = 1` only when the queried name has a configured `A / IN` record; otherwise it sets `ANCOUNT = 0`.
+- Sets `RCODE = NXDOMAIN` when the queried name is not configured.
 
-For an `A / IN` query, the answer section contains:
+For the configured `example.com A / IN` query, the answer section contains:
 
 ```text
 NAME     0xc00c  (pointer to the original QNAME at byte 12)
@@ -104,16 +106,17 @@ The `0xc00c` name uses DNS compression in the response. It points back to the QN
 
 `main.go` sends the bytes returned by `buildResponse` to the original sender address with `WriteToUDP`. `dig` receives the response and displays either:
 
-- One `A` answer containing `1.2.3.4` for `A / IN` queries.
-- A valid DNS response with `ANSWER: 0` for unsupported types, such as `AAAA`.
+- The configured `A` answer for a known name.
+- `NXDOMAIN` for an unknown name.
+- A valid DNS response with `ANSWER: 0` for unsupported types on known names, such as `example.com AAAA`.
 
 ## File Responsibilities
 
 | File | Responsibility |
 | --- | --- |
-| `main.go` | Opens the UDP socket, receives packets, calls the parser and response builder, logs results, and sends replies. |
+| `main.go` | Owns the configured records, opens the UDP socket, receives packets, calls the parser and response builder, logs results, and sends replies. |
 | `dns.go` | Parses DNS headers, flags, QNAMEs, questions, and one complete DNS message. |
-| `response.go` | Builds the DNS response header, copies the question, and optionally appends the hardcoded A record. |
+| `response.go` | Builds a DNS response from a parsed message and explicitly supplied records, copies the question, and optionally appends an A record. |
 | `dns_test.go` | Tests parser behavior and malformed DNS query handling. |
 | `response_test.go` | Tests response flags, answer counts, answer bytes, and unsupported query behavior. |
 | `README.md` | Provides setup instructions, `dig` demos, DNS wire-format background, and limitations. |
@@ -122,17 +125,21 @@ The `0xc00c` name uses DNS compression in the response. It points back to the QN
 
 | Query | Result |
 | --- | --- |
-| `A / IN` | Returns one hardcoded answer: `1.2.3.4` with TTL 60. |
-| `AAAA / IN` | Returns a valid response with no answers. |
-| Other type or class | Returns a valid response with no answers. |
+| `example.com A / IN` | Returns `1.2.3.4` with TTL 60. |
+| `test.local A / IN` | Returns `5.6.7.8` with TTL 60. |
+| Unknown name | Returns `NXDOMAIN` with no answers. |
+| Unsupported type on a configured name | Returns `NOERROR` with no answers. |
+| Unsupported class | Returns a valid response with no answers. |
 | Malformed packet | Logs a parse or response-building error and keeps the UDP server running. |
 
-The current A response is based only on QTYPE and QCLASS. The queried domain name is not yet used to select a record, so every valid `A / IN` query receives `1.2.3.4`.
+The current A response is selected by QNAME, QTYPE, and QCLASS from an in-memory record map owned by `main.go`.
 
 ## Design Decisions
 
 - The parser is separate from UDP networking so DNS byte handling can be tested without starting a server.
 - The response builder is separate from `main.go` so response bytes can be tested directly.
+- Each packet is parsed into a `Message` once, and that parsed message is passed to the response builder.
+- The record map is passed explicitly to the response builder instead of being read as global state.
 - The server accepts one question per message to keep the first implementation understandable.
 - The server reports `RA = 0` because it does not recursively resolve or forward queries.
 - The response uses compression only when writing the answer. Incoming compressed QNAMEs are not supported yet.
@@ -143,8 +150,8 @@ The current A response is based only on QTYPE and QCLASS. The queried domain nam
 - No compressed QNAMEs in incoming queries.
 - No EDNS support; use `+noedns` with `dig` for the documented demo.
 - UDP only; no TCP DNS fallback.
-- No recursive resolution, upstream forwarding, caching, or dynamic record lookup.
-- `A / IN` responses are hardcoded to `1.2.3.4` regardless of the queried domain name.
+- No recursive resolution, upstream forwarding, or caching.
+- Records are stored in code rather than loaded from an external configuration file.
 
 ## Verification
 

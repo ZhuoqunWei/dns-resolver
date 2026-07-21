@@ -74,13 +74,30 @@ func sampleTestLocalAQuery() []byte {
 	}
 }
 
-func TestBuildResponseDoesNotSetRA(t *testing.T) {
-	query := sampleQueryWithTypeClass(TypeA, ClassIN)
+func buildTestResponse(t *testing.T, query []byte) []byte {
+	t.Helper()
 
-	response, err := buildResponse(query)
+	msg, err := parseMessage(query)
+	if err != nil {
+		t.Fatalf("parseMessage returned error: %v", err)
+	}
+
+	records := map[string][4]byte{
+		"example.com": {1, 2, 3, 4},
+		"test.local":  {5, 6, 7, 8},
+	}
+
+	response, err := buildResponse(query, msg, records)
 	if err != nil {
 		t.Fatalf("buildResponse returned error: %v", err)
 	}
+
+	return response
+}
+
+func TestBuildResponseDoesNotSetRA(t *testing.T) {
+	query := sampleQueryWithTypeClass(TypeA, ClassIN)
+	response := buildTestResponse(t, query)
 
 	flags := binary.BigEndian.Uint16(response[2:4])
 
@@ -91,11 +108,7 @@ func TestBuildResponseDoesNotSetRA(t *testing.T) {
 
 func TestBuildResponseSetsQR(t *testing.T) {
 	query := sampleQueryWithTypeClass(TypeA, ClassIN)
-
-	response, err := buildResponse(query)
-	if err != nil {
-		t.Fatalf("buildResponse returned error: %v", err)
-	}
+	response := buildTestResponse(t, query)
 
 	flags := binary.BigEndian.Uint16(response[2:4])
 
@@ -106,11 +119,7 @@ func TestBuildResponseSetsQR(t *testing.T) {
 
 func TestBuildResponseCopiesRD(t *testing.T) {
 	query := sampleQueryWithTypeClass(TypeA, ClassIN)
-
-	response, err := buildResponse(query)
-	if err != nil {
-		t.Fatalf("buildResponse returned error: %v", err)
-	}
+	response := buildTestResponse(t, query)
 
 	flags := binary.BigEndian.Uint16(response[2:4])
 
@@ -121,11 +130,7 @@ func TestBuildResponseCopiesRD(t *testing.T) {
 
 func TestBuildResponseReturnsAAnswerForTypeAClassIN(t *testing.T) {
 	query := sampleQueryWithTypeClass(TypeA, ClassIN)
-
-	response, err := buildResponse(query)
-	if err != nil {
-		t.Fatalf("buildResponse returned error: %v", err)
-	}
+	response := buildTestResponse(t, query)
 
 	ancount := binary.BigEndian.Uint16(response[6:8])
 	if ancount != 1 {
@@ -155,11 +160,7 @@ func TestBuildResponseReturnsAAnswerForTypeAClassIN(t *testing.T) {
 
 func TestBuildResponseReturnsConfiguredTestLocalRecord(t *testing.T) {
 	query := sampleTestLocalAQuery()
-
-	response, err := buildResponse(query)
-	if err != nil {
-		t.Fatalf("buildResponse returned error: %v", err)
-	}
+	response := buildTestResponse(t, query)
 
 	ancount := binary.BigEndian.Uint16(response[6:8])
 	if ancount != 1 {
@@ -188,11 +189,7 @@ func TestBuildResponseReturnsConfiguredTestLocalRecord(t *testing.T) {
 
 func TestBuildResponseReturnsNXDOMAINForUnknownDomain(t *testing.T) {
 	query := sampleOtherDomainAQuery()
-
-	response, err := buildResponse(query)
-	if err != nil {
-		t.Fatalf("buildResponse returned error: %v", err)
-	}
+	response := buildTestResponse(t, query)
 
 	ancount := binary.BigEndian.Uint16(response[6:8])
 	if ancount != 0 {
@@ -214,11 +211,7 @@ func TestBuildResponseNoAnswerForUnsupportedType(t *testing.T) {
 	const TypeAAAA uint16 = 28
 
 	query := sampleQueryWithTypeClass(TypeAAAA, ClassIN)
-
-	response, err := buildResponse(query)
-	if err != nil {
-		t.Fatalf("buildResponse returned error: %v", err)
-	}
+	response := buildTestResponse(t, query)
 
 	ancount := binary.BigEndian.Uint16(response[6:8])
 	if ancount != 0 {
@@ -240,11 +233,7 @@ func TestBuildResponseNoAnswerForUnsupportedClass(t *testing.T) {
 	const ClassCH uint16 = 3
 
 	query := sampleQueryWithTypeClass(TypeA, ClassCH)
-
-	response, err := buildResponse(query)
-	if err != nil {
-		t.Fatalf("buildResponse returned error: %v", err)
-	}
+	response := buildTestResponse(t, query)
 
 	ancount := binary.BigEndian.Uint16(response[6:8])
 	if ancount != 0 {

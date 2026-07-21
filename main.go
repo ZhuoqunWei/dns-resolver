@@ -27,6 +27,10 @@ func main() {
 
 	// 3. Create a buffer for incoming packets
 	buf := make([]byte, 512)
+	records := map[string][4]byte{
+		"example.com": {1, 2, 3, 4},
+		"test.local":  {5, 6, 7, 8},
+	}
 
 	// 4. Keep server running forever
 	for {
@@ -43,7 +47,7 @@ func main() {
 			continue
 		}
 
-		response, err := buildResponse(packet)
+		response, err := buildResponse(packet, msg, records)
 		if err != nil {
 			fmt.Println("response build error:", err)
 			continue

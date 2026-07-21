@@ -7,12 +7,7 @@ import (
 
 const rCodeNXDomain uint16 = 3
 
-var records = map[string][4]byte{
-	"example.com": {1, 2, 3, 4},
-	"test.local":  {5, 6, 7, 8},
-}
-
-func buildResponse(query []byte) ([]byte, error) {
+func buildResponse(query []byte, msg Message, records map[string][4]byte) ([]byte, error) {
 	if len(query) < 12 {
 		return nil, fmt.Errorf("query too short")
 	}
@@ -22,23 +17,18 @@ func buildResponse(query []byte) ([]byte, error) {
 		return nil, err
 	}
 
-	qtype := binary.BigEndian.Uint16(query[questionEnd-4 : questionEnd-2])
-	qclass := binary.BigEndian.Uint16(query[questionEnd-2 : questionEnd])
-
-	question, _, err := parseQuestion(query, HeaderSize)
-	if err != nil {
-		return nil, fmt.Errorf("parse question: %w", err)
-	}
-
+	question := msg.Question
 	rData, exists := records[question.Name]
 
-	hasAnswer := qtype == TypeA &&
-		qclass == ClassIN &&
+	hasAnswer := question.QType == TypeA &&
+		question.QClass == ClassIN &&
 		exists
 	response := make([]byte, 0)
 
-	// ID: copy from query
-	response = append(response, query[0], query[1])
+	// ID: copy from parsed query message
+	idBytes := make([]byte, 2)
+	binary.BigEndian.PutUint16(idBytes, msg.Header.ID)
+	response = append(response, idBytes...)
 
 	// Flags:
 	// QR = 1 response
@@ -47,8 +37,7 @@ func buildResponse(query []byte) ([]byte, error) {
 	// RCODE = NXDOMAIN when the queried name is not configured
 	var flags uint16 = 0x8000 // QR = 1
 
-	queryFlags := binary.BigEndian.Uint16(query[2:4])
-	if queryFlags&0x0100 != 0 {
+	if msg.Flags.RD {
 		flags |= 0x0100 // copy RD
 	}
 	if !exists {
