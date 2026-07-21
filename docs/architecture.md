@@ -23,7 +23,7 @@ dns.go: parseMessage
   v
 Message { Header, Flags, Question }
   |
-  | parsed message, original query, and records
+  | parsed message and records
   v
 response.go: buildResponse
   |
@@ -79,7 +79,7 @@ The parser returns errors for truncated or malformed packets. `main.go` logs the
 
 After a query is successfully parsed, `main.go` calls `buildResponse` in `response.go`.
 
-`buildResponse` receives the parsed `Message` and the record map from `main.go`. It uses the original query only to find and copy the question section, then constructs a new DNS response from the parsed fields:
+`buildResponse` receives the parsed `Message` and the record map from `main.go`. It encodes a new question section and constructs the DNS response entirely from the parsed fields:
 
 - Copies the transaction ID from the query so `dig` can match the reply to its request.
 - Sets `QR = 1` to mark the packet as a response.
@@ -100,7 +100,7 @@ RDLENGTH 4
 RDATA    1.2.3.4
 ```
 
-The `0xc00c` name uses DNS compression in the response. It points back to the QNAME in the copied question section instead of encoding the domain name again.
+The `0xc00c` name uses DNS compression in the response. It points back to the encoded QNAME at byte 12 instead of encoding the domain name again in the answer.
 
 ### 4. Send the response
 
@@ -116,7 +116,7 @@ The `0xc00c` name uses DNS compression in the response. It points back to the QN
 | --- | --- |
 | `main.go` | Owns the configured records, opens the UDP socket, receives packets, calls the parser and response builder, logs results, and sends replies. |
 | `dns.go` | Parses DNS headers, flags, QNAMEs, questions, and one complete DNS message. |
-| `response.go` | Builds a DNS response from a parsed message and explicitly supplied records, copies the question, and optionally appends an A record. |
+| `response.go` | Encodes a DNS response from a parsed message and explicitly supplied records, including the question and optional A answer. |
 | `dns_test.go` | Tests parser behavior and malformed DNS query handling. |
 | `response_test.go` | Tests response flags, answer counts, answer bytes, and unsupported query behavior. |
 | `README.md` | Provides setup instructions, `dig` demos, DNS wire-format background, and limitations. |
@@ -139,6 +139,7 @@ The current A response is selected by QNAME, QTYPE, and QCLASS from an in-memory
 - The parser is separate from UDP networking so DNS byte handling can be tested without starting a server.
 - The response builder is separate from `main.go` so response bytes can be tested directly.
 - Each packet is parsed into a `Message` once, and that parsed message is passed to the response builder.
+- The response builder depends on parsed data rather than the original query bytes.
 - The record map is passed explicitly to the response builder instead of being read as global state.
 - The server accepts one question per message to keep the first implementation understandable.
 - The server reports `RA = 0` because it does not recursively resolve or forward queries.

@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/binary"
+	"strings"
 	"testing"
 )
 
@@ -87,12 +88,63 @@ func buildTestResponse(t *testing.T, query []byte) []byte {
 		"test.local":  {5, 6, 7, 8},
 	}
 
-	response, err := buildResponse(query, msg, records)
+	response, err := buildResponse(msg, records)
 	if err != nil {
 		t.Fatalf("buildResponse returned error: %v", err)
 	}
 
 	return response
+}
+
+func TestEncodeQName(t *testing.T) {
+	tests := []struct {
+		name    string
+		qname   string
+		want    []byte
+		wantErr bool
+	}{
+		{
+			name:  "encodes example.com",
+			qname: "example.com",
+			want: []byte{
+				0x07, 'e', 'x', 'a', 'm', 'p', 'l', 'e',
+				0x03, 'c', 'o', 'm',
+				0x00,
+			},
+		},
+		{
+			name:  "encodes root",
+			qname: "",
+			want:  []byte{0x00},
+		},
+		{
+			name:    "rejects empty label",
+			qname:   "example..com",
+			wantErr: true,
+		},
+		{
+			name:    "rejects label longer than 63 bytes",
+			qname:   strings.Repeat("a", 64) + ".com",
+			wantErr: true,
+		},
+		{
+			name:    "rejects encoded name longer than 255 bytes",
+			qname:   strings.Join([]string{strings.Repeat("a", 63), strings.Repeat("b", 63), strings.Repeat("c", 63), strings.Repeat("d", 63)}, "."),
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := encodeQName(tt.qname)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("encodeQName() error = %v, wantErr %v", err, tt.wantErr)
+			}
+			if !bytes.Equal(got, tt.want) {
+				t.Fatalf("encodeQName() = %v, want %v", got, tt.want)
+			}
+		})
+	}
 }
 
 func TestBuildResponseDoesNotSetRA(t *testing.T) {
@@ -137,9 +189,9 @@ func TestBuildResponseReturnsAAnswerForTypeAClassIN(t *testing.T) {
 		t.Fatalf("ANCOUNT = %d, want 1", ancount)
 	}
 
-	questionEnd, err := findQuestionEnd(query)
-	if err != nil {
-		t.Fatalf("findQuestionEnd returned error: %v", err)
+	questionEnd := len(query)
+	if !bytes.Equal(response[HeaderSize:questionEnd], query[HeaderSize:]) {
+		t.Fatalf("response question = %v, want %v", response[HeaderSize:questionEnd], query[HeaderSize:])
 	}
 
 	answer := response[questionEnd:]
@@ -167,9 +219,9 @@ func TestBuildResponseReturnsConfiguredTestLocalRecord(t *testing.T) {
 		t.Fatalf("ANCOUNT = %d, want 1", ancount)
 	}
 
-	questionEnd, err := findQuestionEnd(query)
-	if err != nil {
-		t.Fatalf("findQuestionEnd returned error: %v", err)
+	questionEnd := len(query)
+	if !bytes.Equal(response[HeaderSize:questionEnd], query[HeaderSize:]) {
+		t.Fatalf("response question = %v, want %v", response[HeaderSize:questionEnd], query[HeaderSize:])
 	}
 
 	answer := response[questionEnd:]

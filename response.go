@@ -3,26 +3,24 @@ package main
 import (
 	"encoding/binary"
 	"fmt"
+	"strings"
 )
 
 const rCodeNXDomain uint16 = 3
 
-func buildResponse(query []byte, msg Message, records map[string][4]byte) ([]byte, error) {
-	if len(query) < 12 {
-		return nil, fmt.Errorf("query too short")
-	}
-
-	questionEnd, err := findQuestionEnd(query)
-	if err != nil {
-		return nil, err
-	}
-
+func buildResponse(msg Message, records map[string][4]byte) ([]byte, error) {
 	question := msg.Question
 	rData, exists := records[question.Name]
 
 	hasAnswer := question.QType == TypeA &&
 		question.QClass == ClassIN &&
 		exists
+
+	encodedName, err := encodeQName(question.Name)
+	if err != nil {
+		return nil, fmt.Errorf("encode qname: %w", err)
+	}
+
 	response := make([]byte, 0)
 
 	// ID: copy from parsed query message
@@ -66,7 +64,11 @@ func buildResponse(query []byte, msg Message, records map[string][4]byte) ([]byt
 	response = append(response, 0x00, 0x00)
 
 	// Question section
-	response = append(response, query[HeaderSize:questionEnd]...)
+	response = append(response, encodedName...)
+	questionFields := make([]byte, 4)
+	binary.BigEndian.PutUint16(questionFields[0:2], question.QType)
+	binary.BigEndian.PutUint16(questionFields[2:4], question.QClass)
+	response = append(response, questionFields...)
 
 	if !hasAnswer {
 		return response, nil
@@ -95,38 +97,30 @@ func buildResponse(query []byte, msg Message, records map[string][4]byte) ([]byt
 	response = append(response, rData[:]...)
 
 	return response, nil
-
 }
 
-func findQuestionEnd(query []byte) (int, error) {
-	if len(query) < 12 {
-		return 0, fmt.Errorf("query too short")
+func encodeQName(name string) ([]byte, error) {
+	if name == "" {
+		return []byte{0}, nil
 	}
 
-	i := 12
-
-	for {
-		if i >= len(query) {
-			return 0, fmt.Errorf("unterminated qname")
+	encoded := make([]byte, 0, len(name)+2)
+	for _, label := range strings.Split(name, ".") {
+		if label == "" {
+			return nil, fmt.Errorf("empty label in name %q", name)
+		}
+		if len(label) > 63 {
+			return nil, fmt.Errorf("label %q exceeds 63 bytes", label)
 		}
 
-		labelLen := int(query[i])
-		i++
-
-		if labelLen == 0 {
-			break
-		}
-
-		if i+labelLen > len(query) {
-			return 0, fmt.Errorf("label exceeds query length")
-		}
-
-		i += labelLen
+		encoded = append(encoded, byte(len(label)))
+		encoded = append(encoded, label...)
 	}
 
-	if i+4 > len(query) {
-		return 0, fmt.Errorf("missing qtype or qclass")
+	encoded = append(encoded, 0)
+	if len(encoded) > 255 {
+		return nil, fmt.Errorf("encoded name %q exceeds 255 bytes", name)
 	}
 
-	return i + 4, nil
+	return encoded, nil
 }

@@ -47,7 +47,7 @@ func main() {
 			continue
 		}
 
-		response, err := buildResponse(packet, msg, records)
+		response, err := buildResponse(msg, records)
 		if err != nil {
 			fmt.Println("response build error:", err)
 			continue
