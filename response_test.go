@@ -210,6 +210,23 @@ func TestBuildResponseReturnsAAnswerForTypeAClassIN(t *testing.T) {
 	}
 }
 
+func TestBuildResponseMatchesConfiguredNameCaseInsensitively(t *testing.T) {
+	query := sampleQueryWithTypeClass(TypeA, ClassIN)
+	copy(query[13:20], "ExAmPlE")
+	copy(query[21:24], "CoM")
+
+	response := buildTestResponse(t, query)
+
+	anCount := binary.BigEndian.Uint16(response[6:8])
+	if anCount != 1 {
+		t.Fatalf("ANCOUNT = %d, want 1", anCount)
+	}
+
+	if !bytes.Equal(response[len(response)-4:], []byte{1, 2, 3, 4}) {
+		t.Fatalf("RDATA = %v, want [1 2 3 4]", response[len(response)-4:])
+	}
+}
+
 func TestBuildResponseReturnsConfiguredTestLocalRecord(t *testing.T) {
 	query := sampleTestLocalAQuery()
 	response := buildTestResponse(t, query)

@@ -10,7 +10,7 @@ const rCodeNXDomain uint16 = 3
 
 func buildResponse(msg Message, records map[string][4]byte) ([]byte, error) {
 	question := msg.Question
-	rData, exists := records[question.Name]
+	rData, exists := records[canonicalName(question.Name)]
 
 	hasAnswer := question.QType == TypeA &&
 		question.QClass == ClassIN &&
@@ -97,6 +97,10 @@ func buildResponse(msg Message, records map[string][4]byte) ([]byte, error) {
 	response = append(response, rData[:]...)
 
 	return response, nil
+}
+
+func canonicalName(name string) string {
+	return strings.ToLower(strings.TrimSuffix(name, "."))
 }
 
 func encodeQName(name string) ([]byte, error) {
