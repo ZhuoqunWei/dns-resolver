@@ -337,11 +337,15 @@ Tested malformed cases include:
 - Short QTYPE
 - Short QCLASS
 - Bad QNAME passed through `parseMessage`
-- Response builder rejects malformed queries
+
+Additional behavior coverage includes:
+
+- Packet handler rejects malformed queries
 - Response builder does not set `RA`
 - Response builder returns configured answers only for `TypeA / ClassIN`
 - Response builder returns NXDOMAIN for unknown names
 - Response builder returns NOERROR with `ANCOUNT = 0` for unsupported query types on configured names
+- Loopback UDP integration for configured and unknown-name queries
 
 ## Current Limitations
 

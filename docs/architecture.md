@@ -13,9 +13,15 @@ dig
   |
   | UDP DNS query
   v
-main.go: ReadFromUDP
+main.go: ListenUDP
+  |
+  v
+server.go: serveUDP / ReadFromUDP
   |
   | raw packet bytes
+  v
+server.go: handlePacket
+  |
   v
 dns.go: parseMessage
   |
@@ -53,7 +59,7 @@ The server receives the query, parses `example.com`, builds an answer for `1.2.3
 
 ### 1. Receive a UDP packet
 
-`main.go` creates a UDP listener on `127.0.0.1:8053`. It allocates a 512-byte buffer, then waits in a loop for packets with `ReadFromUDP`.
+`main.go` creates a UDP listener on `127.0.0.1:8053` and passes it to `serveUDP`. The server loop allocates a 512-byte buffer, then waits for packets with `ReadFromUDP`.
 
 `ReadFromUDP` returns the number of bytes received and the sender address. The program slices the buffer to the exact packet length before parsing it:
 
@@ -73,11 +79,11 @@ This prevents unused bytes from the fixed buffer from becoming part of the DNS m
 
 `parseQName` reads DNS labels such as `03 www 07 example 03 com 00` and joins them into `www.example.com`. It returns the offset immediately after the terminating `00`; `parseQuestion` uses that offset to locate the two-byte QTYPE and QCLASS fields.
 
-The parser returns errors for truncated or malformed packets. `main.go` logs the error and continues waiting for the next UDP packet instead of terminating the server.
+The parser returns errors for truncated or malformed packets. `handlePacket` returns the error to `serveUDP`, which logs it and continues waiting for the next UDP packet instead of terminating the server.
 
 ### 3. Build a DNS response
 
-After a query is successfully parsed, `main.go` calls `buildResponse` in `response.go`.
+After a query is successfully parsed, `handlePacket` calls `buildResponse` in `response.go`.
 
 `buildResponse` receives the parsed `Message` and the record map from `main.go`. It encodes a new question section and constructs the DNS response entirely from the parsed fields:
 
@@ -104,7 +110,7 @@ The `0xc00c` name uses DNS compression in the response. It points back to the en
 
 ### 4. Send the response
 
-`main.go` sends the bytes returned by `buildResponse` to the original sender address with `WriteToUDP`. `dig` receives the response and displays either:
+`serveUDP` sends the bytes returned by `handlePacket` to the original sender address with `WriteToUDP`. `dig` receives the response and displays either:
 
 - The configured `A` answer for a known name.
 - `NXDOMAIN` for an unknown name.
@@ -114,7 +120,9 @@ The `0xc00c` name uses DNS compression in the response. It points back to the en
 
 | File | Responsibility |
 | --- | --- |
-| `main.go` | Owns the configured records, opens the UDP socket, receives packets, calls the parser and response builder, logs results, and sends replies. |
+| `main.go` | Owns the configured records, opens the UDP socket, and starts the server loop. |
+| `server.go` | Receives and sends UDP packets, coordinates parsing and response building, and logs query results. |
+| `server_test.go` | Sends real queries over a loopback UDP socket and verifies the returned responses. |
 | `dns.go` | Parses DNS headers, flags, QNAMEs, questions, and one complete DNS message. |
 | `response.go` | Encodes a DNS response from a parsed message and explicitly supplied records, including the question and optional A answer. |
 | `dns_test.go` | Tests parser behavior and malformed DNS query handling. |
@@ -138,6 +146,7 @@ The current A response is selected by QNAME, QTYPE, and QCLASS from an in-memory
 
 - The parser is separate from UDP networking so DNS byte handling can be tested without starting a server.
 - The response builder is separate from `main.go` so response bytes can be tested directly.
+- Packet handling is separate from the UDP loop so parsing and response construction have a single testable boundary.
 - Each packet is parsed into a `Message` once, and that parsed message is passed to the response builder.
 - The response builder depends on parsed data rather than the original query bytes.
 - The record map is passed explicitly to the response builder instead of being read as global state.
@@ -162,4 +171,4 @@ Run the unit tests:
 go test -count=1 ./...
 ```
 
-Run the server and use the `dig` commands in `README.md` to verify the full UDP request/response path.
+The test suite starts the server on an operating-system-assigned loopback UDP port and verifies configured and unknown-name responses through a real socket. You can also run the server and use the `dig` commands in `README.md` for a manual demo.
