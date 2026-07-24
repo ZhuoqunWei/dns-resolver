@@ -25,9 +25,15 @@ func main() {
 
 	fmt.Println("DNS UDP server listening on 127.0.0.1:8053")
 
-	records := map[string][4]byte{
-		"example.com": {1, 2, 3, 4},
-		"test.local":  {5, 6, 7, 8},
+	records := map[string]ARecord{
+		"example.com": {
+			Address: [4]byte{1, 2, 3, 4},
+			TTL:     60,
+		},
+		"test.local": {
+			Address: [4]byte{5, 6, 7, 8},
+			TTL:     60,
+		},
 	}
 
 	if err := serveUDP(conn, records, os.Stdout); err != nil {

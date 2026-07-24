@@ -8,9 +8,9 @@ import (
 
 const rCodeNXDomain uint16 = 3
 
-func buildResponse(msg Message, records map[string][4]byte) ([]byte, error) {
+func buildResponse(msg Message, records map[string]ARecord) ([]byte, error) {
 	question := msg.Question
-	rData, exists := records[canonicalName(question.Name)]
+	record, exists := records[canonicalName(question.Name)]
 
 	hasAnswer := question.QType == TypeA &&
 		question.QClass == ClassIN &&
@@ -85,16 +85,16 @@ func buildResponse(msg Message, records map[string][4]byte) ([]byte, error) {
 	// CLASS = IN
 	response = append(response, 0x00, 0x01)
 
-	// TTL = 60
+	// TTL
 	ttl := make([]byte, 4)
-	binary.BigEndian.PutUint32(ttl, 60)
+	binary.BigEndian.PutUint32(ttl, record.TTL)
 	response = append(response, ttl...)
 
 	// RDLENGTH = 4
 	response = append(response, 0x00, 0x04)
 
 	// RDATA = configured IPv4 address
-	response = append(response, rData[:]...)
+	response = append(response, record.Address[:]...)
 
 	return response, nil
 }

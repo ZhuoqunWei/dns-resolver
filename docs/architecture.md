@@ -85,7 +85,7 @@ The parser returns errors for truncated or malformed packets. `handlePacket` ret
 
 After a query is successfully parsed, `handlePacket` calls `buildResponse` in `response.go`.
 
-`buildResponse` receives the parsed `Message` and the record map from `main.go`. It encodes a new question section and constructs the DNS response entirely from the parsed fields:
+`buildResponse` receives the parsed `Message` and the A-record map from `main.go`. Each `ARecord` contains an IPv4 address and TTL. The builder encodes a new question section and constructs the DNS response from the parsed fields and selected record:
 
 - Copies the transaction ID from the query so `dig` can match the reply to its request.
 - Sets `QR = 1` to mark the packet as a response.
@@ -121,6 +121,7 @@ The `0xc00c` name uses DNS compression in the response. It points back to the en
 | File | Responsibility |
 | --- | --- |
 | `main.go` | Owns the configured records, opens the UDP socket, and starts the server loop. |
+| `record.go` | Defines the internal A-record model, including its IPv4 address and TTL. |
 | `server.go` | Receives and sends UDP packets, coordinates parsing and response building, and logs query results. |
 | `server_test.go` | Sends real queries over a loopback UDP socket and verifies the returned responses. |
 | `dns.go` | Parses DNS headers, flags, QNAMEs, questions, and one complete DNS message. |
@@ -140,7 +141,7 @@ The `0xc00c` name uses DNS compression in the response. It points back to the en
 | Unsupported class | Returns a valid response with no answers. |
 | Malformed packet | Logs a parse or response-building error and keeps the UDP server running. |
 
-The current A response is selected by QNAME, QTYPE, and QCLASS from an in-memory record map owned by `main.go`.
+The current A response is selected by QNAME, QTYPE, and QCLASS from an in-memory record map owned by `main.go`. The answer address and TTL come from the selected `ARecord`.
 
 ## Design Decisions
 
@@ -149,7 +150,7 @@ The current A response is selected by QNAME, QTYPE, and QCLASS from an in-memory
 - Packet handling is separate from the UDP loop so parsing and response construction have a single testable boundary.
 - Each packet is parsed into a `Message` once, and that parsed message is passed to the response builder.
 - The response builder depends on parsed data rather than the original query bytes.
-- The record map is passed explicitly to the response builder instead of being read as global state.
+- The A-record map is passed explicitly to the response builder instead of being read as global state.
 - The server accepts one question per message to keep the first implementation understandable.
 - The server reports `RA = 0` because it does not recursively resolve or forward queries.
 - The response uses compression only when writing the answer. Incoming compressed QNAMEs are not supported yet.

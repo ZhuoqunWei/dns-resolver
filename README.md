@@ -277,7 +277,7 @@ Expected behavior:
 ;; ANSWER SECTION:
 example.com.            60      IN      A       1.2.3.4
 ```
-The A response is currently configured in the in-memory record map:
+The A response is currently configured in an in-memory map of `ARecord` values. Each record stores its IPv4 address and TTL:
 
 ```
 example.com.  60  IN  A  1.2.3.4

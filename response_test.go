@@ -83,9 +83,15 @@ func buildTestResponse(t *testing.T, query []byte) []byte {
 		t.Fatalf("parseMessage returned error: %v", err)
 	}
 
-	records := map[string][4]byte{
-		"example.com": {1, 2, 3, 4},
-		"test.local":  {5, 6, 7, 8},
+	records := map[string]ARecord{
+		"example.com": {
+			Address: [4]byte{1, 2, 3, 4},
+			TTL:     60,
+		},
+		"test.local": {
+			Address: [4]byte{5, 6, 7, 8},
+			TTL:     60,
+		},
 	}
 
 	response, err := buildResponse(msg, records)
@@ -224,6 +230,32 @@ func TestBuildResponseMatchesConfiguredNameCaseInsensitively(t *testing.T) {
 
 	if !bytes.Equal(response[len(response)-4:], []byte{1, 2, 3, 4}) {
 		t.Fatalf("RDATA = %v, want [1 2 3 4]", response[len(response)-4:])
+	}
+}
+
+func TestBuildResponseUsesConfiguredTTL(t *testing.T) {
+	query := sampleQueryWithTypeClass(TypeA, ClassIN)
+	msg, err := parseMessage(query)
+	if err != nil {
+		t.Fatalf("parseMessage returned error: %v", err)
+	}
+
+	records := map[string]ARecord{
+		"example.com": {
+			Address: [4]byte{1, 2, 3, 4},
+			TTL:     300,
+		},
+	}
+
+	response, err := buildResponse(msg, records)
+	if err != nil {
+		t.Fatalf("buildResponse returned error: %v", err)
+	}
+
+	answer := response[len(query):]
+	ttl := binary.BigEndian.Uint32(answer[6:10])
+	if ttl != 300 {
+		t.Fatalf("TTL = %d, want 300", ttl)
 	}
 }
 

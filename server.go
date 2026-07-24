@@ -8,7 +8,7 @@ import (
 	"net"
 )
 
-func handlePacket(packet []byte, records map[string][4]byte) (Message, []byte, error) {
+func handlePacket(packet []byte, records map[string]ARecord) (Message, []byte, error) {
 	msg, err := parseMessage(packet)
 	if err != nil {
 		return Message{}, nil, fmt.Errorf("parse message: %w", err)
@@ -22,7 +22,7 @@ func handlePacket(packet []byte, records map[string][4]byte) (Message, []byte, e
 	return msg, response, nil
 }
 
-func serveUDP(conn *net.UDPConn, records map[string][4]byte, output io.Writer) error {
+func serveUDP(conn *net.UDPConn, records map[string]ARecord, output io.Writer) error {
 	buf := make([]byte, 512)
 
 	for {

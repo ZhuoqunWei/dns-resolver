@@ -10,8 +10,11 @@ import (
 )
 
 func TestHandlePacketRejectsMalformedQuery(t *testing.T) {
-	records := map[string][4]byte{
-		"example.com": {1, 2, 3, 4},
+	records := map[string]ARecord{
+		"example.com": {
+			Address: [4]byte{1, 2, 3, 4},
+			TTL:     60,
+		},
 	}
 
 	if _, _, err := handlePacket([]byte{0x00}, records); err == nil {
@@ -28,9 +31,15 @@ func TestServeUDPRespondsToQueries(t *testing.T) {
 		t.Fatalf("listen for UDP: %v", err)
 	}
 
-	records := map[string][4]byte{
-		"example.com": {1, 2, 3, 4},
-		"test.local":  {5, 6, 7, 8},
+	records := map[string]ARecord{
+		"example.com": {
+			Address: [4]byte{1, 2, 3, 4},
+			TTL:     60,
+		},
+		"test.local": {
+			Address: [4]byte{5, 6, 7, 8},
+			TTL:     60,
+		},
 	}
 
 	serverDone := make(chan error, 1)
