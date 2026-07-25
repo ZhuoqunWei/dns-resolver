@@ -36,9 +36,9 @@ func TestServeUDPRespondsToQueries(t *testing.T) {
 			Address: [4]byte{1, 2, 3, 4},
 			TTL:     60,
 		},
-		"test.local": {
+		"test.example.com": {
 			Address: [4]byte{5, 6, 7, 8},
-			TTL:     60,
+			TTL:     300,
 		},
 	}
 

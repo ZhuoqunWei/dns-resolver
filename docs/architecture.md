@@ -6,6 +6,24 @@ This project is a small DNS server written in Go to learn DNS wire-format parsin
 
 It is not a recursive resolver. It listens locally on `127.0.0.1:8053`, parses one DNS question, and returns configured IPv4 answers for `A` queries in the `IN` class. Unknown names return `NXDOMAIN`, while unsupported types on configured names receive a valid response with no answer records.
 
+## Startup Configuration Flow
+
+```text
+records.json
+  |
+  v
+config.go: loadARecords
+  |
+  | validate names, IPv4 addresses, and duplicates
+  v
+map[string]ARecord
+  |
+  v
+main.go: serveUDP
+```
+
+The configuration file is read once before the UDP socket is opened. The validated runtime map is then reused for every query.
+
 ## Request and Response Flow
 
 ```text
@@ -35,7 +53,7 @@ response.go: buildResponse
   |
   | DNS response bytes
   v
-main.go: WriteToUDP
+server.go: WriteToUDP
   |
   v
 dig prints the DNS response
@@ -57,7 +75,13 @@ The server receives the query, parses `example.com`, builds an answer for `1.2.3
 
 ## Runtime Flow
 
-### 1. Receive a UDP packet
+### 1. Load configured records
+
+`main.go` calls `loadARecords` with `records.json`. The loader decodes the JSON, canonicalizes each name, validates each IPv4 address, rejects duplicate normalized names, and creates the runtime `map[string]ARecord`.
+
+If the file cannot be read or validated, the program exits before opening the UDP socket.
+
+### 2. Receive a UDP packet
 
 `main.go` creates a UDP listener on `127.0.0.1:8053` and passes it to `serveUDP`. The server loop allocates a 512-byte buffer, then waits for packets with `ReadFromUDP`.
 
@@ -69,7 +93,7 @@ packet := buf[:n]
 
 This prevents unused bytes from the fixed buffer from becoming part of the DNS message.
 
-### 2. Parse the DNS query
+### 3. Parse the DNS query
 
 `parseMessage` in `dns.go` converts the packet bytes into a `Message` struct. It expects exactly one question and does this work in order:
 
@@ -81,7 +105,7 @@ This prevents unused bytes from the fixed buffer from becoming part of the DNS m
 
 The parser returns errors for truncated or malformed packets. `handlePacket` returns the error to `serveUDP`, which logs it and continues waiting for the next UDP packet instead of terminating the server.
 
-### 3. Build a DNS response
+### 4. Build a DNS response
 
 After a query is successfully parsed, `handlePacket` calls `buildResponse` in `response.go`.
 
@@ -108,7 +132,7 @@ RDATA    1.2.3.4
 
 The `0xc00c` name uses DNS compression in the response. It points back to the encoded QNAME at byte 12 instead of encoding the domain name again in the answer.
 
-### 4. Send the response
+### 5. Send the response
 
 `serveUDP` sends the bytes returned by `handlePacket` to the original sender address with `WriteToUDP`. `dig` receives the response and displays either:
 
@@ -120,7 +144,10 @@ The `0xc00c` name uses DNS compression in the response. It points back to the en
 
 | File | Responsibility |
 | --- | --- |
-| `main.go` | Owns the configured records, opens the UDP socket, and starts the server loop. |
+| `main.go` | Loads configured records, opens the UDP socket, and starts the server loop. |
+| `config.go` | Reads and validates JSON configuration, then converts entries into runtime A records. |
+| `config_test.go` | Tests valid configuration, canonicalization, malformed input, invalid addresses, and duplicate names. |
+| `records.json` | Defines the A records loaded when the server starts. |
 | `record.go` | Defines the internal A-record model, including its IPv4 address and TTL. |
 | `server.go` | Receives and sends UDP packets, coordinates parsing and response building, and logs query results. |
 | `server_test.go` | Sends real queries over a loopback UDP socket and verifies the returned responses. |
@@ -135,13 +162,13 @@ The `0xc00c` name uses DNS compression in the response. It points back to the en
 | Query | Result |
 | --- | --- |
 | `example.com A / IN` | Returns `1.2.3.4` with TTL 60. |
-| `test.local A / IN` | Returns `5.6.7.8` with TTL 60. |
+| `test.example.com A / IN` | Returns `5.6.7.8` with TTL 300. |
 | Unknown name | Returns `NXDOMAIN` with no answers. |
 | Unsupported type on a configured name | Returns `NOERROR` with no answers. |
 | Unsupported class | Returns a valid response with no answers. |
 | Malformed packet | Logs a parse or response-building error and keeps the UDP server running. |
 
-The current A response is selected by QNAME, QTYPE, and QCLASS from an in-memory record map owned by `main.go`. The answer address and TTL come from the selected `ARecord`.
+The current A response is selected by QNAME, QTYPE, and QCLASS from the record map loaded at startup. The answer address and TTL come from the selected `ARecord`.
 
 ## Design Decisions
 
@@ -151,6 +178,7 @@ The current A response is selected by QNAME, QTYPE, and QCLASS from an in-memory
 - Each packet is parsed into a `Message` once, and that parsed message is passed to the response builder.
 - The response builder depends on parsed data rather than the original query bytes.
 - The A-record map is passed explicitly to the response builder instead of being read as global state.
+- Configuration is validated and converted into runtime records once during startup rather than parsed for each query.
 - The server accepts one question per message to keep the first implementation understandable.
 - The server reports `RA = 0` because it does not recursively resolve or forward queries.
 - The response uses compression only when writing the answer. Incoming compressed QNAMEs are not supported yet.
@@ -162,7 +190,7 @@ The current A response is selected by QNAME, QTYPE, and QCLASS from an in-memory
 - No EDNS support; use `+noedns` with `dig` for the documented demo.
 - UDP only; no TCP DNS fallback.
 - No recursive resolution, upstream forwarding, or caching.
-- Records are stored in code rather than loaded from an external configuration file.
+- Configuration changes require restarting the server; live reload is not supported.
 
 ## Verification
 

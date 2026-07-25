@@ -54,7 +54,7 @@ func sampleOtherDomainAQuery() []byte {
 	}
 }
 
-func sampleTestLocalAQuery() []byte {
+func sampleTestExampleAQuery() []byte {
 	return []byte{
 		// Header
 		0x12, 0x34, // ID
@@ -64,9 +64,10 @@ func sampleTestLocalAQuery() []byte {
 		0x00, 0x00, // NSCOUNT = 0
 		0x00, 0x00, // ARCOUNT = 0
 
-		// QNAME: test.local
+		// QNAME: test.example.com
 		0x04, 't', 'e', 's', 't',
-		0x05, 'l', 'o', 'c', 'a', 'l',
+		0x07, 'e', 'x', 'a', 'm', 'p', 'l', 'e',
+		0x03, 'c', 'o', 'm',
 		0x00,
 
 		// QTYPE: A, QCLASS: IN
@@ -88,9 +89,9 @@ func buildTestResponse(t *testing.T, query []byte) []byte {
 			Address: [4]byte{1, 2, 3, 4},
 			TTL:     60,
 		},
-		"test.local": {
+		"test.example.com": {
 			Address: [4]byte{5, 6, 7, 8},
-			TTL:     60,
+			TTL:     300,
 		},
 	}
 
@@ -259,8 +260,8 @@ func TestBuildResponseUsesConfiguredTTL(t *testing.T) {
 	}
 }
 
-func TestBuildResponseReturnsConfiguredTestLocalRecord(t *testing.T) {
-	query := sampleTestLocalAQuery()
+func TestBuildResponseReturnsConfiguredTestExampleRecord(t *testing.T) {
+	query := sampleTestExampleAQuery()
 	response := buildTestResponse(t, query)
 
 	ancount := binary.BigEndian.Uint16(response[6:8])
@@ -278,7 +279,7 @@ func TestBuildResponseReturnsConfiguredTestLocalRecord(t *testing.T) {
 		0xc0, 0x0c, // NAME pointer
 		0x00, 0x01, // TYPE = A
 		0x00, 0x01, // CLASS = IN
-		0x00, 0x00, 0x00, 0x3c, // TTL = 60
+		0x00, 0x00, 0x01, 0x2c, // TTL = 300
 		0x00, 0x04, // RDLENGTH = 4
 		5, 6, 7, 8, // RDATA
 	}

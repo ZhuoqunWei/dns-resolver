@@ -4,7 +4,7 @@
 
 A small DNS server written in Go as part of a systems/networking learning project.
 
-The current version can parse basic DNS query messages from raw bytes, listen for UDP DNS queries on `127.0.0.1:8053`, and return a minimal DNS response. For configured `A / IN` queries, it returns the matching IPv4 address from an in-memory record map.
+The current version can parse basic DNS query messages from raw bytes, listen for UDP DNS queries on `127.0.0.1:8053`, and return a minimal DNS response. For configured `A / IN` queries, it returns the matching IPv4 address and TTL loaded from `records.json`.
 
 This is not a recursive resolver yet. It does not forward queries to upstream DNS servers, perform caching, or dynamically resolve real domain names.
 
@@ -240,6 +240,22 @@ Question.QClass = 1
 
 ## Running the UDP DNS Server
 
+The server loads `records.json` once during startup. Each entry provides a domain name, IPv4 address, and TTL:
+
+```json
+{
+  "records": [
+    {
+      "name": "example.com",
+      "address": "1.2.3.4",
+      "ttl": 60
+    }
+  ]
+}
+```
+
+Names are normalized for case-insensitive lookup. Invalid names, non-IPv4 addresses, and duplicate normalized names prevent the server from starting.
+
 Start the server:
 ```
 go run .
@@ -277,7 +293,7 @@ Expected behavior:
 ;; ANSWER SECTION:
 example.com.            60      IN      A       1.2.3.4
 ```
-The A response is currently configured in an in-memory map of `ARecord` values. Each record stores its IPv4 address and TTL:
+The A response is loaded from `records.json` into an in-memory map of `ARecord` values. Each runtime record stores its validated IPv4 address and TTL:
 
 ```
 example.com.  60  IN  A  1.2.3.4
@@ -312,7 +328,7 @@ This confirms that unsupported query types do not receive fake answers.
 Current response behavior:
 ```
 example.com A      -> NOERROR, ANSWER: 1, 1.2.3.4
-test.local A       -> NOERROR, ANSWER: 1, 5.6.7.8
+test.example.com A -> NOERROR, ANSWER: 1, 5.6.7.8
 other.com A        -> NXDOMAIN, ANSWER: 0
 example.com AAAA   -> NOERROR, ANSWER: 0
 ```
@@ -346,6 +362,7 @@ Additional behavior coverage includes:
 - Response builder returns NXDOMAIN for unknown names
 - Response builder returns NOERROR with `ANCOUNT = 0` for unsupported query types on configured names
 - Loopback UDP integration for configured and unknown-name queries
+- JSON loader accepts valid A records and rejects malformed configuration
 
 ## Current Limitations
 
@@ -359,7 +376,7 @@ This project intentionally does not support everything yet.
 - Does not perform recursive resolution yet
 - Does not forward queries to upstream DNS servers yet
 - Does not implement caching yet
-- Stores A records in a hardcoded in-memory map rather than an external configuration file
+- Loads configuration only at startup; live reload is not supported yet
 
 These limitations are intentional because the current milestone is focused on understanding DNS query parsing, UDP packet handling, and minimal DNS response construction.
 
