@@ -4,7 +4,7 @@
 
 A small DNS server written in Go as part of a systems/networking learning project.
 
-The current version can parse basic DNS query messages from raw bytes, listen for UDP DNS queries on `127.0.0.1:8053`, and return a minimal DNS response. For configured `A / IN` queries, it returns the matching IPv4 address and TTL loaded from `records.json`.
+The current version can parse basic DNS query messages from raw bytes, listen for UDP DNS queries on `127.0.0.1:8053`, and return a minimal DNS response. It serves one configured zone and returns matching IPv4 addresses and TTLs loaded from `records.json`.
 
 This is not a recursive resolver yet. It does not forward queries to upstream DNS servers, perform caching, or dynamically resolve real domain names.
 
@@ -244,6 +244,7 @@ The server loads `records.json` once during startup. Each entry provides a domai
 
 ```json
 {
+  "origin": "example.com",
   "records": [
     {
       "name": "example.com",
@@ -254,7 +255,7 @@ The server loads `records.json` once during startup. Each entry provides a domai
 }
 ```
 
-Names are normalized for case-insensitive lookup. Invalid names, non-IPv4 addresses, and duplicate normalized names prevent the server from starting.
+The origin defines the zone served by this process. Names are normalized for case-insensitive lookup. Invalid names, non-IPv4 addresses, duplicate normalized names, and records outside the configured zone prevent the server from starting.
 
 Start the server:
 ```
@@ -329,10 +330,11 @@ Current response behavior:
 ```
 example.com A      -> NOERROR, ANSWER: 1, 1.2.3.4
 test.example.com A -> NOERROR, ANSWER: 1, 5.6.7.8
-other.com A        -> NXDOMAIN, ANSWER: 0
+missing.example.com A -> NXDOMAIN, ANSWER: 0
+other.com A        -> REFUSED, ANSWER: 0
 example.com AAAA   -> NOERROR, ANSWER: 0
 ```
-An unknown name returns NXDOMAIN. A configured name queried for an unsupported record type returns NOERROR with an empty answer section. Every response uses the same transaction ID as the query, sets QR = true, copies RD from the query, and sets RA = false.
+An unknown name inside the configured zone returns NXDOMAIN. A name outside the zone returns REFUSED. A configured name queried for an unsupported record type returns NOERROR with an empty answer section. Every response uses the same transaction ID as the query, sets QR = true, copies RD from the query, and sets RA = false.
 
 The answer section uses DNS name compression:
 
@@ -359,7 +361,8 @@ Additional behavior coverage includes:
 - Packet handler rejects malformed queries
 - Response builder does not set `RA`
 - Response builder returns configured answers only for `TypeA / ClassIN`
-- Response builder returns NXDOMAIN for unknown names
+- Response builder returns NXDOMAIN for missing in-zone names
+- Response builder returns REFUSED for out-of-zone names
 - Response builder returns NOERROR with `ANCOUNT = 0` for unsupported query types on configured names
 - Loopback UDP integration for configured and unknown-name queries
 - JSON loader accepts valid A records and rejects malformed configuration
@@ -377,6 +380,7 @@ This project intentionally does not support everything yet.
 - Does not forward queries to upstream DNS servers yet
 - Does not implement caching yet
 - Loads configuration only at startup; live reload is not supported yet
+- Serves one configured zone
 
 These limitations are intentional because the current milestone is focused on understanding DNS query parsing, UDP packet handling, and minimal DNS response construction.
 

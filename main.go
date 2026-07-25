@@ -8,9 +8,9 @@ import (
 )
 
 func main() {
-	records, err := loadARecords("records.json")
+	zone, err := loadZone("records.json")
 	if err != nil {
-		log.Fatal("load records: ", err)
+		log.Fatal("load zone: ", err)
 	}
 
 	// UDP server
@@ -29,7 +29,7 @@ func main() {
 
 	fmt.Println("DNS UDP server listening on 127.0.0.1:8053")
 
-	if err := serveUDP(conn, records, os.Stdout); err != nil {
+	if err := serveUDP(conn, zone, os.Stdout); err != nil {
 		log.Fatal(err)
 	}
 }

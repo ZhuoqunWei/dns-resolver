@@ -17,20 +17,24 @@ func writeRecordsConfig(t *testing.T, content string) string {
 	return path
 }
 
-func TestLoadARecords(t *testing.T) {
+func TestLoadZone(t *testing.T) {
 	path := writeRecordsConfig(t, `{
+		"origin": "Example.COM.",
 		"records": [
 			{"name": "Example.COM.", "address": "1.2.3.4", "ttl": 60},
 			{"name": "test.example.com", "address": "5.6.7.8", "ttl": 300}
 		]
 	}`)
 
-	records, err := loadARecords(path)
+	zone, err := loadZone(path)
 	if err != nil {
-		t.Fatalf("loadARecords returned error: %v", err)
+		t.Fatalf("loadZone returned error: %v", err)
+	}
+	if zone.Origin != "example.com" {
+		t.Fatalf("zone origin = %q, want %q", zone.Origin, "example.com")
 	}
 
-	example, exists := records["example.com"]
+	example, exists := zone.Records["example.com"]
 	if !exists {
 		t.Fatal(`records["example.com"] does not exist`)
 	}
@@ -41,7 +45,7 @@ func TestLoadARecords(t *testing.T) {
 		t.Fatalf("example.com TTL = %d, want 60", example.TTL)
 	}
 
-	testRecord, exists := records["test.example.com"]
+	testRecord, exists := zone.Records["test.example.com"]
 	if !exists {
 		t.Fatal(`records["test.example.com"] does not exist`)
 	}
@@ -53,7 +57,7 @@ func TestLoadARecords(t *testing.T) {
 	}
 }
 
-func TestLoadARecordsRejectsInvalidConfiguration(t *testing.T) {
+func TestLoadZoneRejectsInvalidConfiguration(t *testing.T) {
 	tests := []struct {
 		name    string
 		content string
@@ -64,27 +68,40 @@ func TestLoadARecordsRejectsInvalidConfiguration(t *testing.T) {
 		},
 		{
 			name:    "unknown field",
-			content: `{"records": [{"name": "example.com", "address": "1.2.3.4", "tll": 60}]}`,
+			content: `{"origin": "example.com", "records": [{"name": "example.com", "address": "1.2.3.4", "tll": 60}]}`,
+		},
+		{
+			name:    "missing origin",
+			content: `{"records": [{"name": "example.com", "address": "1.2.3.4", "ttl": 60}]}`,
+		},
+		{
+			name:    "invalid origin",
+			content: `{"origin": "example..com", "records": []}`,
 		},
 		{
 			name:    "empty name",
-			content: `{"records": [{"name": "", "address": "1.2.3.4", "ttl": 60}]}`,
+			content: `{"origin": "example.com", "records": [{"name": "", "address": "1.2.3.4", "ttl": 60}]}`,
 		},
 		{
 			name:    "invalid name",
-			content: `{"records": [{"name": "example..com", "address": "1.2.3.4", "ttl": 60}]}`,
+			content: `{"origin": "example.com", "records": [{"name": "example..com", "address": "1.2.3.4", "ttl": 60}]}`,
+		},
+		{
+			name:    "record outside zone",
+			content: `{"origin": "example.com", "records": [{"name": "other.com", "address": "1.2.3.4", "ttl": 60}]}`,
 		},
 		{
 			name:    "invalid address",
-			content: `{"records": [{"name": "example.com", "address": "not-an-ip", "ttl": 60}]}`,
+			content: `{"origin": "example.com", "records": [{"name": "example.com", "address": "not-an-ip", "ttl": 60}]}`,
 		},
 		{
 			name:    "IPv6 address",
-			content: `{"records": [{"name": "example.com", "address": "2001:db8::1", "ttl": 60}]}`,
+			content: `{"origin": "example.com", "records": [{"name": "example.com", "address": "2001:db8::1", "ttl": 60}]}`,
 		},
 		{
 			name: "duplicate canonical name",
 			content: `{
+				"origin": "example.com",
 				"records": [
 					{"name": "example.com", "address": "1.2.3.4", "ttl": 60},
 					{"name": "EXAMPLE.COM.", "address": "5.6.7.8", "ttl": 300}
@@ -97,17 +114,17 @@ func TestLoadARecordsRejectsInvalidConfiguration(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			path := writeRecordsConfig(t, tt.content)
 
-			if _, err := loadARecords(path); err == nil {
-				t.Fatal("loadARecords returned nil error")
+			if _, err := loadZone(path); err == nil {
+				t.Fatal("loadZone returned nil error")
 			}
 		})
 	}
 }
 
-func TestLoadARecordsReturnsReadError(t *testing.T) {
+func TestLoadZoneReturnsReadError(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "missing.json")
 
-	if _, err := loadARecords(path); err == nil {
-		t.Fatal("loadARecords returned nil error for missing file")
+	if _, err := loadZone(path); err == nil {
+		t.Fatal("loadZone returned nil error for missing file")
 	}
 }

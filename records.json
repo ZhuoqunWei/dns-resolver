@@ -1,4 +1,5 @@
 {
+  "origin": "example.com",
   "records": [
     {
       "name": "example.com",

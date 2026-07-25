@@ -4,7 +4,7 @@
 
 This project is a small DNS server written in Go to learn DNS wire-format parsing, UDP networking, and DNS response construction.
 
-It is not a recursive resolver. It listens locally on `127.0.0.1:8053`, parses one DNS question, and returns configured IPv4 answers for `A` queries in the `IN` class. Unknown names return `NXDOMAIN`, while unsupported types on configured names receive a valid response with no answer records.
+It is not a recursive resolver. It listens locally on `127.0.0.1:8053`, parses one DNS question, and returns configured IPv4 answers for `A` queries in the `IN` class. Missing names inside the configured zone return `NXDOMAIN`, names outside the zone return `REFUSED`, and unsupported types on existing names receive a valid response with no answer records.
 
 ## Startup Configuration Flow
 
@@ -12,17 +12,17 @@ It is not a recursive resolver. It listens locally on `127.0.0.1:8053`, parses o
 records.json
   |
   v
-config.go: loadARecords
+config.go: loadZone
   |
-  | validate names, IPv4 addresses, and duplicates
+  | validate origin, names, IPv4 addresses, and duplicates
   v
-map[string]ARecord
+Zone { Origin, Records }
   |
   v
 main.go: serveUDP
 ```
 
-The configuration file is read once before the UDP socket is opened. The validated runtime map is then reused for every query.
+The configuration file is read once before the UDP socket is opened. The validated runtime zone is then reused for every query.
 
 ## Request and Response Flow
 
@@ -47,7 +47,7 @@ dns.go: parseMessage
   v
 Message { Header, Flags, Question }
   |
-  | parsed message and records
+  | parsed message and zone
   v
 response.go: buildResponse
   |
@@ -77,7 +77,7 @@ The server receives the query, parses `example.com`, builds an answer for `1.2.3
 
 ### 1. Load configured records
 
-`main.go` calls `loadARecords` with `records.json`. The loader decodes the JSON, canonicalizes each name, validates each IPv4 address, rejects duplicate normalized names, and creates the runtime `map[string]ARecord`.
+`main.go` calls `loadZone` with `records.json`. The loader decodes the JSON, canonicalizes the origin and record names, validates each IPv4 address, rejects duplicate names and out-of-zone records, and creates the runtime `Zone`.
 
 If the file cannot be read or validated, the program exits before opening the UDP socket.
 
@@ -109,7 +109,7 @@ The parser returns errors for truncated or malformed packets. `handlePacket` ret
 
 After a query is successfully parsed, `handlePacket` calls `buildResponse` in `response.go`.
 
-`buildResponse` receives the parsed `Message` and the A-record map from `main.go`. Each `ARecord` contains an IPv4 address and TTL. The builder encodes a new question section and constructs the DNS response from the parsed fields and selected record:
+`buildResponse` receives the parsed `Message` and `Zone` from `main.go`. Each `ARecord` contains an IPv4 address and TTL. The builder classifies the query against the zone, encodes a new question section, and constructs the DNS response from the parsed fields and selected record:
 
 - Copies the transaction ID from the query so `dig` can match the reply to its request.
 - Sets `QR = 1` to mark the packet as a response.
@@ -117,7 +117,8 @@ After a query is successfully parsed, `handlePacket` calls `buildResponse` in `r
 - Leaves `RA = 0` because this server does not provide recursive resolution.
 - Sets `QDCOUNT = 1` and copies the original question into the response.
 - Sets `ANCOUNT = 1` only when the queried name has a configured `A / IN` record; otherwise it sets `ANCOUNT = 0`.
-- Sets `RCODE = NXDOMAIN` when the queried name is not configured.
+- Sets `RCODE = NXDOMAIN` when the queried name is missing inside the zone.
+- Sets `RCODE = REFUSED` when the queried name is outside the zone.
 
 For the configured `example.com A / IN` query, the answer section contains:
 
@@ -137,7 +138,8 @@ The `0xc00c` name uses DNS compression in the response. It points back to the en
 `serveUDP` sends the bytes returned by `handlePacket` to the original sender address with `WriteToUDP`. `dig` receives the response and displays either:
 
 - The configured `A` answer for a known name.
-- `NXDOMAIN` for an unknown name.
+- `NXDOMAIN` for a missing name inside the zone.
+- `REFUSED` for a name outside the zone.
 - A valid DNS response with `ANSWER: 0` for unsupported types on known names, such as `example.com AAAA`.
 
 ## File Responsibilities
@@ -145,10 +147,12 @@ The `0xc00c` name uses DNS compression in the response. It points back to the en
 | File | Responsibility |
 | --- | --- |
 | `main.go` | Loads configured records, opens the UDP socket, and starts the server loop. |
-| `config.go` | Reads and validates JSON configuration, then converts entries into runtime A records. |
-| `config_test.go` | Tests valid configuration, canonicalization, malformed input, invalid addresses, and duplicate names. |
-| `records.json` | Defines the A records loaded when the server starts. |
+| `config.go` | Reads and validates JSON configuration, then converts it into a runtime zone. |
+| `config_test.go` | Tests origin and record validation, canonicalization, malformed input, invalid addresses, duplicates, and out-of-zone records. |
+| `records.json` | Defines the zone origin and A records loaded when the server starts. |
 | `record.go` | Defines the internal A-record model, including its IPv4 address and TTL. |
+| `zone.go` | Groups the origin and records and classifies names as in-zone or out-of-zone. |
+| `zone_test.go` | Tests zone-boundary matching and owner-name existence. |
 | `server.go` | Receives and sends UDP packets, coordinates parsing and response building, and logs query results. |
 | `server_test.go` | Sends real queries over a loopback UDP socket and verifies the returned responses. |
 | `dns.go` | Parses DNS headers, flags, QNAMEs, questions, and one complete DNS message. |
@@ -163,12 +167,13 @@ The `0xc00c` name uses DNS compression in the response. It points back to the en
 | --- | --- |
 | `example.com A / IN` | Returns `1.2.3.4` with TTL 60. |
 | `test.example.com A / IN` | Returns `5.6.7.8` with TTL 300. |
-| Unknown name | Returns `NXDOMAIN` with no answers. |
+| Missing name inside `example.com` | Returns `NXDOMAIN` with no answers. |
+| Name outside `example.com` | Returns `REFUSED` with no answers. |
 | Unsupported type on a configured name | Returns `NOERROR` with no answers. |
 | Unsupported class | Returns a valid response with no answers. |
 | Malformed packet | Logs a parse or response-building error and keeps the UDP server running. |
 
-The current A response is selected by QNAME, QTYPE, and QCLASS from the record map loaded at startup. The answer address and TTL come from the selected `ARecord`.
+The current response is selected by zone membership, owner-name existence, QTYPE, and QCLASS. The answer address and TTL come from the selected `ARecord`.
 
 ## Design Decisions
 
@@ -177,7 +182,8 @@ The current A response is selected by QNAME, QTYPE, and QCLASS from the record m
 - Packet handling is separate from the UDP loop so parsing and response construction have a single testable boundary.
 - Each packet is parsed into a `Message` once, and that parsed message is passed to the response builder.
 - The response builder depends on parsed data rather than the original query bytes.
-- The A-record map is passed explicitly to the response builder instead of being read as global state.
+- The zone is passed explicitly to the response builder instead of being read as global state.
+- Zone membership requires either the exact origin or a label-delimited subdomain, so `badexample.com` is not inside `example.com`.
 - Configuration is validated and converted into runtime records once during startup rather than parsed for each query.
 - The server accepts one question per message to keep the first implementation understandable.
 - The server reports `RA = 0` because it does not recursively resolve or forward queries.
@@ -191,6 +197,7 @@ The current A response is selected by QNAME, QTYPE, and QCLASS from the record m
 - UDP only; no TCP DNS fallback.
 - No recursive resolution, upstream forwarding, or caching.
 - Configuration changes require restarting the server; live reload is not supported.
+- One configured zone only.
 
 ## Verification
 
@@ -200,4 +207,4 @@ Run the unit tests:
 go test -count=1 ./...
 ```
 
-The test suite starts the server on an operating-system-assigned loopback UDP port and verifies configured and unknown-name responses through a real socket. You can also run the server and use the `dig` commands in `README.md` for a manual demo.
+The test suite starts the server on an operating-system-assigned loopback UDP port and verifies configured, missing in-zone, and out-of-zone responses through a real socket. You can also run the server and use the `dig` commands in `README.md` for a manual demo.

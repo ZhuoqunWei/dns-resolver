@@ -6,15 +6,22 @@ import (
 	"strings"
 )
 
-const rCodeNXDomain uint16 = 3
+const (
+	rCodeNXDomain uint16 = 3
+	rCodeRefused  uint16 = 5
+)
 
-func buildResponse(msg Message, records map[string]ARecord) ([]byte, error) {
+func buildResponse(msg Message, zone Zone) ([]byte, error) {
 	question := msg.Question
-	record, exists := records[canonicalName(question.Name)]
+	name := canonicalName(question.Name)
+	record, recordExists := zone.Records[name]
+	inZone := zone.contains(name)
+	nameExists := zone.nameExists(name)
 
 	hasAnswer := question.QType == TypeA &&
 		question.QClass == ClassIN &&
-		exists
+		recordExists &&
+		inZone
 
 	encodedName, err := encodeQName(question.Name)
 	if err != nil {
@@ -32,13 +39,16 @@ func buildResponse(msg Message, records map[string]ARecord) ([]byte, error) {
 	// QR = 1 response
 	// RD = copied from query
 	// RA = 0 because we do not support recursion yet
-	// RCODE = NXDOMAIN when the queried name is not configured
+	// RCODE = NXDOMAIN for a missing in-zone name
+	// RCODE = REFUSED for a name outside the configured zone
 	var flags uint16 = 0x8000 // QR = 1
 
 	if msg.Flags.RD {
 		flags |= 0x0100 // copy RD
 	}
-	if !exists {
+	if !inZone {
+		flags |= rCodeRefused
+	} else if !nameExists {
 		flags |= rCodeNXDomain
 	}
 

@@ -8,13 +8,13 @@ import (
 	"net"
 )
 
-func handlePacket(packet []byte, records map[string]ARecord) (Message, []byte, error) {
+func handlePacket(packet []byte, zone Zone) (Message, []byte, error) {
 	msg, err := parseMessage(packet)
 	if err != nil {
 		return Message{}, nil, fmt.Errorf("parse message: %w", err)
 	}
 
-	response, err := buildResponse(msg, records)
+	response, err := buildResponse(msg, zone)
 	if err != nil {
 		return msg, nil, fmt.Errorf("build response: %w", err)
 	}
@@ -22,7 +22,7 @@ func handlePacket(packet []byte, records map[string]ARecord) (Message, []byte, e
 	return msg, response, nil
 }
 
-func serveUDP(conn *net.UDPConn, records map[string]ARecord, output io.Writer) error {
+func serveUDP(conn *net.UDPConn, zone Zone, output io.Writer) error {
 	buf := make([]byte, 512)
 
 	for {
@@ -35,7 +35,7 @@ func serveUDP(conn *net.UDPConn, records map[string]ARecord, output io.Writer) e
 			continue
 		}
 
-		msg, response, err := handlePacket(buf[:n], records)
+		msg, response, err := handlePacket(buf[:n], zone)
 		if err != nil {
 			fmt.Fprintln(output, "query error from", remoteAddr, ":", err)
 			continue

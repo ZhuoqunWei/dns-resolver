@@ -54,6 +54,28 @@ func sampleOtherDomainAQuery() []byte {
 	}
 }
 
+func sampleMissingSubdomainAQuery() []byte {
+	return []byte{
+		// Header
+		0x12, 0x34, // ID
+		0x01, 0x00, // Flags: RD = true
+		0x00, 0x01, // QDCOUNT = 1
+		0x00, 0x00, // ANCOUNT = 0
+		0x00, 0x00, // NSCOUNT = 0
+		0x00, 0x00, // ARCOUNT = 0
+
+		// QNAME: missing.example.com
+		0x07, 'm', 'i', 's', 's', 'i', 'n', 'g',
+		0x07, 'e', 'x', 'a', 'm', 'p', 'l', 'e',
+		0x03, 'c', 'o', 'm',
+		0x00,
+
+		// QTYPE: A, QCLASS: IN
+		0x00, 0x01,
+		0x00, 0x01,
+	}
+}
+
 func sampleTestExampleAQuery() []byte {
 	return []byte{
 		// Header
@@ -84,18 +106,7 @@ func buildTestResponse(t *testing.T, query []byte) []byte {
 		t.Fatalf("parseMessage returned error: %v", err)
 	}
 
-	records := map[string]ARecord{
-		"example.com": {
-			Address: [4]byte{1, 2, 3, 4},
-			TTL:     60,
-		},
-		"test.example.com": {
-			Address: [4]byte{5, 6, 7, 8},
-			TTL:     300,
-		},
-	}
-
-	response, err := buildResponse(msg, records)
+	response, err := buildResponse(msg, testZone())
 	if err != nil {
 		t.Fatalf("buildResponse returned error: %v", err)
 	}
@@ -241,14 +252,17 @@ func TestBuildResponseUsesConfiguredTTL(t *testing.T) {
 		t.Fatalf("parseMessage returned error: %v", err)
 	}
 
-	records := map[string]ARecord{
-		"example.com": {
-			Address: [4]byte{1, 2, 3, 4},
-			TTL:     300,
+	zone := Zone{
+		Origin: "example.com",
+		Records: map[string]ARecord{
+			"example.com": {
+				Address: [4]byte{1, 2, 3, 4},
+				TTL:     300,
+			},
 		},
 	}
 
-	response, err := buildResponse(msg, records)
+	response, err := buildResponse(msg, zone)
 	if err != nil {
 		t.Fatalf("buildResponse returned error: %v", err)
 	}
@@ -289,8 +303,8 @@ func TestBuildResponseReturnsConfiguredTestExampleRecord(t *testing.T) {
 	}
 }
 
-func TestBuildResponseReturnsNXDOMAINForUnknownDomain(t *testing.T) {
-	query := sampleOtherDomainAQuery()
+func TestBuildResponseReturnsNXDOMAINForMissingInZoneName(t *testing.T) {
+	query := sampleMissingSubdomainAQuery()
 	response := buildTestResponse(t, query)
 
 	ancount := binary.BigEndian.Uint16(response[6:8])
@@ -302,6 +316,26 @@ func TestBuildResponseReturnsNXDOMAINForUnknownDomain(t *testing.T) {
 	rcode := flags & 0x000f
 	if rcode != rCodeNXDomain {
 		t.Fatalf("RCODE = %d, want %d (NXDOMAIN)", rcode, rCodeNXDomain)
+	}
+
+	if !bytes.Equal(response[HeaderSize:], query[HeaderSize:]) {
+		t.Fatalf("response question = %v, want %v", response[HeaderSize:], query[HeaderSize:])
+	}
+}
+
+func TestBuildResponseReturnsRefusedForOutOfZoneName(t *testing.T) {
+	query := sampleOtherDomainAQuery()
+	response := buildTestResponse(t, query)
+
+	ancount := binary.BigEndian.Uint16(response[6:8])
+	if ancount != 0 {
+		t.Fatalf("ANCOUNT = %d, want 0", ancount)
+	}
+
+	flags := binary.BigEndian.Uint16(response[2:4])
+	rcode := flags & 0x000f
+	if rcode != rCodeRefused {
+		t.Fatalf("RCODE = %d, want %d (REFUSED)", rcode, rCodeRefused)
 	}
 
 	if !bytes.Equal(response[HeaderSize:], query[HeaderSize:]) {

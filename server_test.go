@@ -10,14 +10,7 @@ import (
 )
 
 func TestHandlePacketRejectsMalformedQuery(t *testing.T) {
-	records := map[string]ARecord{
-		"example.com": {
-			Address: [4]byte{1, 2, 3, 4},
-			TTL:     60,
-		},
-	}
-
-	if _, _, err := handlePacket([]byte{0x00}, records); err == nil {
+	if _, _, err := handlePacket([]byte{0x00}, testZone()); err == nil {
 		t.Fatal("handlePacket returned nil error for malformed query")
 	}
 }
@@ -31,20 +24,9 @@ func TestServeUDPRespondsToQueries(t *testing.T) {
 		t.Fatalf("listen for UDP: %v", err)
 	}
 
-	records := map[string]ARecord{
-		"example.com": {
-			Address: [4]byte{1, 2, 3, 4},
-			TTL:     60,
-		},
-		"test.example.com": {
-			Address: [4]byte{5, 6, 7, 8},
-			TTL:     300,
-		},
-	}
-
 	serverDone := make(chan error, 1)
 	go func() {
-		serverDone <- serveUDP(serverConn, records, io.Discard)
+		serverDone <- serveUDP(serverConn, testZone(), io.Discard)
 	}()
 
 	clientConn, err := net.DialUDP("udp", nil, serverConn.LocalAddr().(*net.UDPAddr))
@@ -68,9 +50,14 @@ func TestServeUDPRespondsToQueries(t *testing.T) {
 			wantRData:   []byte{1, 2, 3, 4},
 		},
 		{
-			name:      "unknown name",
-			query:     sampleOtherDomainAQuery(),
+			name:      "missing in-zone name",
+			query:     sampleMissingSubdomainAQuery(),
 			wantRCode: rCodeNXDomain,
+		},
+		{
+			name:      "out-of-zone name",
+			query:     sampleOtherDomainAQuery(),
+			wantRCode: rCodeRefused,
 		},
 	}
 

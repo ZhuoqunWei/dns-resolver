@@ -10,7 +10,8 @@ import (
 	"strings"
 )
 
-type recordsConfig struct {
+type zoneConfig struct {
+	Origin  string          `json:"origin"`
 	Records []aRecordConfig `json:"records"`
 }
 
@@ -20,49 +21,64 @@ type aRecordConfig struct {
 	TTL     uint32 `json:"ttl"`
 }
 
-func loadARecords(path string) (map[string]ARecord, error) {
+func loadZone(path string) (Zone, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return nil, fmt.Errorf("read records config %q: %w", path, err)
+		return Zone{}, fmt.Errorf("read zone config %q: %w", path, err)
 	}
 
-	var config recordsConfig
+	var config zoneConfig
 	decoder := json.NewDecoder(bytes.NewReader(data))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&config); err != nil {
-		return nil, fmt.Errorf("parse records config %q: %w", path, err)
+		return Zone{}, fmt.Errorf("parse zone config %q: %w", path, err)
 	}
 	if err := decoder.Decode(&struct{}{}); err != io.EOF {
-		return nil, fmt.Errorf("parse records config %q: expected one JSON object", path)
+		return Zone{}, fmt.Errorf("parse zone config %q: expected one JSON object", path)
 	}
 
-	records := make(map[string]ARecord, len(config.Records))
+	origin := canonicalName(strings.TrimSpace(config.Origin))
+	if origin == "" {
+		return Zone{}, fmt.Errorf("zone origin is required")
+	}
+	if _, err := encodeQName(origin); err != nil {
+		return Zone{}, fmt.Errorf("invalid zone origin %q: %w", config.Origin, err)
+	}
+
+	zone := Zone{
+		Origin:  origin,
+		Records: make(map[string]ARecord, len(config.Records)),
+	}
+
 	for i, configuredRecord := range config.Records {
 		recordNumber := i + 1
 		name := canonicalName(strings.TrimSpace(configuredRecord.Name))
 		if name == "" {
-			return nil, fmt.Errorf("record %d: name is required", recordNumber)
+			return Zone{}, fmt.Errorf("record %d: name is required", recordNumber)
 		}
 		if _, err := encodeQName(name); err != nil {
-			return nil, fmt.Errorf("record %d: invalid name %q: %w", recordNumber, configuredRecord.Name, err)
+			return Zone{}, fmt.Errorf("record %d: invalid name %q: %w", recordNumber, configuredRecord.Name, err)
 		}
-		if _, exists := records[name]; exists {
-			return nil, fmt.Errorf("record %d: duplicate name %q", recordNumber, name)
+		if !zone.contains(name) {
+			return Zone{}, fmt.Errorf("record %d: name %q is outside zone %q", recordNumber, name, zone.Origin)
+		}
+		if _, exists := zone.Records[name]; exists {
+			return Zone{}, fmt.Errorf("record %d: duplicate name %q", recordNumber, name)
 		}
 
 		address, err := netip.ParseAddr(strings.TrimSpace(configuredRecord.Address))
 		if err != nil {
-			return nil, fmt.Errorf("record %d: invalid address %q: %w", recordNumber, configuredRecord.Address, err)
+			return Zone{}, fmt.Errorf("record %d: invalid address %q: %w", recordNumber, configuredRecord.Address, err)
 		}
 		if !address.Is4() {
-			return nil, fmt.Errorf("record %d: address %q is not IPv4", recordNumber, configuredRecord.Address)
+			return Zone{}, fmt.Errorf("record %d: address %q is not IPv4", recordNumber, configuredRecord.Address)
 		}
 
-		records[name] = ARecord{
+		zone.Records[name] = ARecord{
 			Address: address.As4(),
 			TTL:     configuredRecord.TTL,
 		}
 	}
 
-	return records, nil
+	return zone, nil
 }
