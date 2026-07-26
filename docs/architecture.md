@@ -59,7 +59,7 @@ The server receives the query, parses `example.com`, builds an answer for `1.2.3
 
 ### 1. Load configured records
 
-`main.go` calls `loadZone` with `records.json`. The loader decodes the JSON, canonicalizes the origin and record names, validates each IPv4 address, rejects duplicate names and out-of-zone records, and creates the runtime `Zone`.
+`main.go` calls `loadZone` with `records.json`. The loader decodes the JSON, canonicalizes the origin, names, and types, validates A and AAAA address families, rejects duplicate name-and-type pairs and out-of-zone records, and creates the runtime `Zone`.
 
 If the file cannot be read or validated, the program exits before opening the UDP socket.
 
@@ -129,8 +129,8 @@ The `0xc00c` name uses DNS compression in the response. It points back to the en
 | File | Responsibility |
 | --- | --- |
 | `main.go` | Loads configured records, opens the UDP socket, and starts the server loop. |
-| `config.go` | Reads and validates JSON configuration, then converts it into a runtime zone. |
-| `config_test.go` | Tests origin and record validation, canonicalization, malformed input, invalid addresses, duplicates, and out-of-zone records. |
+| `config.go` | Reads and validates typed A/AAAA JSON configuration, then converts values into wire-ready runtime records. |
+| `config_test.go` | Tests origin, record type, address-family, canonicalization, malformed input, duplicate, and zone-boundary validation. |
 | `records.json` | Defines the zone origin and A records loaded when the server starts. |
 | `record.go` | Defines the generic runtime record containing TTL and wire-ready RDATA. |
 | `zone.go` | Groups the origin and records by owner name and DNS type, and classifies names as in-zone or out-of-zone. |
@@ -167,6 +167,7 @@ The current response is selected by zone membership, owner-name existence, QTYPE
 - The zone is passed explicitly to the response builder instead of being read as global state.
 - Runtime records use `Records[name][type][]Record`, allowing multiple types and multiple records per owner without changing the zone shape.
 - Configuration parsing converts human-readable values into validated, wire-ready RDATA once during startup.
+- A values become four-byte RDATA under `TypeA`; AAAA values become sixteen-byte RDATA under `TypeAAAA`.
 - Zone membership requires either the exact origin or a label-delimited subdomain, so `badexample.com` is not inside `example.com`.
 - Configuration is validated and converted into runtime records once during startup rather than parsed for each query.
 - The server accepts one question per message to keep the first implementation understandable.
@@ -182,7 +183,7 @@ The current response is selected by zone membership, owner-name existence, QTYPE
 - No recursive resolution, upstream forwarding, or caching.
 - Configuration changes require restarting the server; live reload is not supported.
 - One configured zone only.
-- The JSON loader and response builder currently support A records only, even though the runtime store can represent additional types.
+- The JSON loader supports A and AAAA records, but the response builder currently emits A answers only.
 
 ## Verification
 

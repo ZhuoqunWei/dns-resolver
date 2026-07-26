@@ -8,8 +8,9 @@ import (
 const (
 	HeaderSize = 12
 
-	TypeA   uint16 = 1
-	ClassIN uint16 = 1
+	TypeA    uint16 = 1
+	TypeAAAA uint16 = 28
+	ClassIN  uint16 = 1
 )
 
 func readU16(data []byte, offset int) (uint16, error) {

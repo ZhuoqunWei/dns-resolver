@@ -240,7 +240,7 @@ Question.QClass = 1
 
 ## Running the UDP DNS Server
 
-The server loads `records.json` once during startup. Each entry provides a domain name, IPv4 address, and TTL:
+The server loads `records.json` once during startup. Each entry provides a domain name, record type, textual value, and TTL:
 
 ```json
 {
@@ -248,14 +248,17 @@ The server loads `records.json` once during startup. Each entry provides a domai
   "records": [
     {
       "name": "example.com",
-      "address": "1.2.3.4",
+      "type": "A",
+      "value": "1.2.3.4",
       "ttl": 60
     }
   ]
 }
 ```
 
-The origin defines the zone served by this process. Names are normalized for case-insensitive lookup. Invalid names, non-IPv4 addresses, duplicate normalized names, and records outside the configured zone prevent the server from starting.
+The loader accepts `A` and `AAAA` address records and converts their values into four-byte or sixteen-byte RDATA. The origin defines the zone served by this process. Names and type strings are normalized for case-insensitive lookup. Invalid names, unsupported types, address-family mismatches, duplicate normalized name-and-type pairs, and records outside the configured zone prevent the server from starting.
+
+AAAA values can be validated and stored, but AAAA response encoding is intentionally deferred to the next ticket.
 
 Start the server:
 ```
@@ -365,7 +368,7 @@ Additional behavior coverage includes:
 - Response builder returns REFUSED for out-of-zone names
 - Response builder returns NOERROR with `ANCOUNT = 0` for unsupported query types on configured names
 - Loopback UDP integration for configured and unknown-name queries
-- JSON loader accepts valid A records and rejects malformed configuration
+- JSON loader accepts valid A and AAAA records and rejects malformed configuration
 
 ## Current Limitations
 

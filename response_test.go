@@ -348,8 +348,6 @@ func TestBuildResponseReturnsRefusedForOutOfZoneName(t *testing.T) {
 }
 
 func TestBuildResponseNoAnswerForUnsupportedType(t *testing.T) {
-	const TypeAAAA uint16 = 28
-
 	query := sampleQueryWithTypeClass(TypeAAAA, ClassIN)
 	response := buildTestResponse(t, query)
 

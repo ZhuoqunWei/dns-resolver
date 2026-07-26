@@ -11,14 +11,15 @@ import (
 )
 
 type zoneConfig struct {
-	Origin  string          `json:"origin"`
-	Records []aRecordConfig `json:"records"`
+	Origin  string         `json:"origin"`
+	Records []recordConfig `json:"records"`
 }
 
-type aRecordConfig struct {
-	Name    string `json:"name"`
-	Address string `json:"address"`
-	TTL     uint32 `json:"ttl"`
+type recordConfig struct {
+	Name  string `json:"name"`
+	Type  string `json:"type"`
+	Value string `json:"value"`
+	TTL   uint32 `json:"ttl"`
 }
 
 func loadZone(path string) (Zone, error) {
@@ -67,26 +68,61 @@ func loadZone(path string) (Zone, error) {
 			recordsByType = make(map[uint16][]Record)
 			zone.Records[name] = recordsByType
 		}
-		if len(recordsByType[TypeA]) > 0 {
-			return Zone{}, fmt.Errorf("record %d: duplicate name %q", recordNumber, name)
-		}
 
-		address, err := netip.ParseAddr(strings.TrimSpace(configuredRecord.Address))
+		recordType, rData, err := parseAddressRecord(configuredRecord.Type, configuredRecord.Value)
 		if err != nil {
-			return Zone{}, fmt.Errorf("record %d: invalid address %q: %w", recordNumber, configuredRecord.Address, err)
+			return Zone{}, fmt.Errorf("record %d: %w", recordNumber, err)
 		}
-		if !address.Is4() {
-			return Zone{}, fmt.Errorf("record %d: address %q is not IPv4", recordNumber, configuredRecord.Address)
+		if len(recordsByType[recordType]) > 0 {
+			return Zone{}, fmt.Errorf(
+				"record %d: duplicate %s record for name %q",
+				recordNumber,
+				strings.ToUpper(strings.TrimSpace(configuredRecord.Type)),
+				name,
+			)
 		}
 
-		ipv4 := address.As4()
-		recordsByType[TypeA] = []Record{
+		recordsByType[recordType] = []Record{
 			{
 				TTL:   configuredRecord.TTL,
-				RData: append([]byte(nil), ipv4[:]...),
+				RData: rData,
 			},
 		}
 	}
 
 	return zone, nil
+}
+
+func parseAddressRecord(recordType string, value string) (uint16, []byte, error) {
+	recordType = strings.ToUpper(strings.TrimSpace(recordType))
+	value = strings.TrimSpace(value)
+
+	switch recordType {
+	case "A":
+		address, err := netip.ParseAddr(value)
+		if err != nil {
+			return 0, nil, fmt.Errorf("invalid A value %q: %w", value, err)
+		}
+		if !address.Is4() {
+			return 0, nil, fmt.Errorf("A value %q is not IPv4", value)
+		}
+
+		ipv4 := address.As4()
+		return TypeA, append([]byte(nil), ipv4[:]...), nil
+
+	case "AAAA":
+		address, err := netip.ParseAddr(value)
+		if err != nil {
+			return 0, nil, fmt.Errorf("invalid AAAA value %q: %w", value, err)
+		}
+		if !address.Is6() {
+			return 0, nil, fmt.Errorf("AAAA value %q is not IPv6", value)
+		}
+
+		ipv6 := address.As16()
+		return TypeAAAA, append([]byte(nil), ipv6[:]...), nil
+
+	default:
+		return 0, nil, fmt.Errorf("unsupported record type %q", recordType)
+	}
 }
