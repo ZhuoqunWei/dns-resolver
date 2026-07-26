@@ -6,58 +6,40 @@ This project is a small DNS server written in Go to learn DNS wire-format parsin
 
 It is not a recursive resolver. It listens locally on `127.0.0.1:8053`, parses one DNS question, and returns configured IPv4 answers for `A` queries in the `IN` class. Missing names inside the configured zone return `NXDOMAIN`, names outside the zone return `REFUSED`, and unsupported types on existing names receive a valid response with no answer records.
 
-## Startup Configuration Flow
+## Architecture Diagram
 
-```text
-records.json
-  |
-  v
-config.go: loadZone
-  |
-  | validate origin, names, IPv4 addresses, and duplicates
-  v
-Zone { Origin, Records }
-  |
-  v
-main.go: serveUDP
+```mermaid
+flowchart LR
+    subgraph Startup["Startup path"]
+        JSON["records.json"]
+        Loader["loadZone<br/>parse and validate"]
+        ZoneStore["Zone<br/>Records[name][type][]Record"]
+
+        JSON --> Loader
+        Loader --> ZoneStore
+    end
+
+    subgraph Query["Request path"]
+        Client["dig or DNS client"]
+        UDP["serveUDP"]
+        Handler["handlePacket"]
+        Parser["parseMessage"]
+        Message["Message<br/>Header, Flags, Question"]
+        Builder["buildResponse"]
+
+        Client -->|"UDP query bytes"| UDP
+        UDP --> Handler
+        Handler --> Parser
+        Parser --> Message
+        Message --> Builder
+        Builder -->|"DNS response bytes"| UDP
+        UDP -->|"UDP response"| Client
+    end
+
+    ZoneStore -->|"read-only lookup"| Builder
 ```
 
 The configuration file is read once before the UDP socket is opened. The validated runtime zone is then reused for every query.
-
-## Request and Response Flow
-
-```text
-dig
-  |
-  | UDP DNS query
-  v
-main.go: ListenUDP
-  |
-  v
-server.go: serveUDP / ReadFromUDP
-  |
-  | raw packet bytes
-  v
-server.go: handlePacket
-  |
-  v
-dns.go: parseMessage
-  |
-  | parseHeader -> parseFlags -> parseQuestion
-  v
-Message { Header, Flags, Question }
-  |
-  | parsed message and zone
-  v
-response.go: buildResponse
-  |
-  | DNS response bytes
-  v
-server.go: WriteToUDP
-  |
-  v
-dig prints the DNS response
-```
 
 For example, run the server in one terminal:
 
@@ -109,7 +91,7 @@ The parser returns errors for truncated or malformed packets. `handlePacket` ret
 
 After a query is successfully parsed, `handlePacket` calls `buildResponse` in `response.go`.
 
-`buildResponse` receives the parsed `Message` and `Zone` from `main.go`. Each `ARecord` contains an IPv4 address and TTL. The builder classifies the query against the zone, encodes a new question section, and constructs the DNS response from the parsed fields and selected record:
+`buildResponse` receives the parsed `Message` and `Zone` from `main.go`. Each `Record` contains a TTL and wire-ready RDATA. The builder classifies the query against the zone, encodes a new question section, and constructs the DNS response from the parsed fields and selected record:
 
 - Copies the transaction ID from the query so `dig` can match the reply to its request.
 - Sets `QR = 1` to mark the packet as a response.
@@ -150,8 +132,8 @@ The `0xc00c` name uses DNS compression in the response. It points back to the en
 | `config.go` | Reads and validates JSON configuration, then converts it into a runtime zone. |
 | `config_test.go` | Tests origin and record validation, canonicalization, malformed input, invalid addresses, duplicates, and out-of-zone records. |
 | `records.json` | Defines the zone origin and A records loaded when the server starts. |
-| `record.go` | Defines the internal A-record model, including its IPv4 address and TTL. |
-| `zone.go` | Groups the origin and records and classifies names as in-zone or out-of-zone. |
+| `record.go` | Defines the generic runtime record containing TTL and wire-ready RDATA. |
+| `zone.go` | Groups the origin and records by owner name and DNS type, and classifies names as in-zone or out-of-zone. |
 | `zone_test.go` | Tests zone-boundary matching and owner-name existence. |
 | `server.go` | Receives and sends UDP packets, coordinates parsing and response building, and logs query results. |
 | `server_test.go` | Sends real queries over a loopback UDP socket and verifies the returned responses. |
@@ -173,7 +155,7 @@ The `0xc00c` name uses DNS compression in the response. It points back to the en
 | Unsupported class | Returns a valid response with no answers. |
 | Malformed packet | Logs a parse or response-building error and keeps the UDP server running. |
 
-The current response is selected by zone membership, owner-name existence, QTYPE, and QCLASS. The answer address and TTL come from the selected `ARecord`.
+The current response is selected by zone membership, owner-name existence, QTYPE, and QCLASS. The answer RDATA and TTL come from the selected `Record`.
 
 ## Design Decisions
 
@@ -183,6 +165,8 @@ The current response is selected by zone membership, owner-name existence, QTYPE
 - Each packet is parsed into a `Message` once, and that parsed message is passed to the response builder.
 - The response builder depends on parsed data rather than the original query bytes.
 - The zone is passed explicitly to the response builder instead of being read as global state.
+- Runtime records use `Records[name][type][]Record`, allowing multiple types and multiple records per owner without changing the zone shape.
+- Configuration parsing converts human-readable values into validated, wire-ready RDATA once during startup.
 - Zone membership requires either the exact origin or a label-delimited subdomain, so `badexample.com` is not inside `example.com`.
 - Configuration is validated and converted into runtime records once during startup rather than parsed for each query.
 - The server accepts one question per message to keep the first implementation understandable.
@@ -198,6 +182,7 @@ The current response is selected by zone membership, owner-name existence, QTYPE
 - No recursive resolution, upstream forwarding, or caching.
 - Configuration changes require restarting the server; live reload is not supported.
 - One configured zone only.
+- The JSON loader and response builder currently support A records only, even though the runtime store can represent additional types.
 
 ## Verification
 

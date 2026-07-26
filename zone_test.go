@@ -5,14 +5,22 @@ import "testing"
 func testZone() Zone {
 	return Zone{
 		Origin: "example.com",
-		Records: map[string]ARecord{
+		Records: map[string]map[uint16][]Record{
 			"example.com": {
-				Address: [4]byte{1, 2, 3, 4},
-				TTL:     60,
+				TypeA: {
+					{
+						TTL:   60,
+						RData: []byte{1, 2, 3, 4},
+					},
+				},
 			},
 			"test.example.com": {
-				Address: [4]byte{5, 6, 7, 8},
-				TTL:     300,
+				TypeA: {
+					{
+						TTL:   300,
+						RData: []byte{5, 6, 7, 8},
+					},
+				},
 			},
 		},
 	}

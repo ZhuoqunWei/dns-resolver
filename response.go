@@ -14,14 +14,21 @@ const (
 func buildResponse(msg Message, zone Zone) ([]byte, error) {
 	question := msg.Question
 	name := canonicalName(question.Name)
-	record, recordExists := zone.Records[name]
+	recordsByType, nameHasRecords := zone.Records[name]
+	aRecords := recordsByType[TypeA]
 	inZone := zone.contains(name)
 	nameExists := zone.nameExists(name)
 
 	hasAnswer := question.QType == TypeA &&
 		question.QClass == ClassIN &&
-		recordExists &&
+		len(aRecords) > 0 &&
+		nameHasRecords &&
 		inZone
+
+	var record Record
+	if hasAnswer {
+		record = aRecords[0]
+	}
 
 	encodedName, err := encodeQName(question.Name)
 	if err != nil {
@@ -100,11 +107,13 @@ func buildResponse(msg Message, zone Zone) ([]byte, error) {
 	binary.BigEndian.PutUint32(ttl, record.TTL)
 	response = append(response, ttl...)
 
-	// RDLENGTH = 4
-	response = append(response, 0x00, 0x04)
+	// RDLENGTH
+	rDataLength := make([]byte, 2)
+	binary.BigEndian.PutUint16(rDataLength, uint16(len(record.RData)))
+	response = append(response, rDataLength...)
 
 	// RDATA = configured IPv4 address
-	response = append(response, record.Address[:]...)
+	response = append(response, record.RData...)
 
 	return response, nil
 }

@@ -4,7 +4,7 @@ import "strings"
 
 type Zone struct {
 	Origin  string
-	Records map[string]ARecord
+	Records map[string]map[uint16][]Record
 }
 
 func (z Zone) contains(name string) bool {

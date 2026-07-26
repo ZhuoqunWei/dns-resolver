@@ -254,10 +254,14 @@ func TestBuildResponseUsesConfiguredTTL(t *testing.T) {
 
 	zone := Zone{
 		Origin: "example.com",
-		Records: map[string]ARecord{
+		Records: map[string]map[uint16][]Record{
 			"example.com": {
-				Address: [4]byte{1, 2, 3, 4},
-				TTL:     300,
+				TypeA: {
+					{
+						TTL:   300,
+						RData: []byte{1, 2, 3, 4},
+					},
+				},
 			},
 		},
 	}

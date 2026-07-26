@@ -294,7 +294,7 @@ Expected behavior:
 ;; ANSWER SECTION:
 example.com.            60      IN      A       1.2.3.4
 ```
-The A response is loaded from `records.json` into an in-memory map of `ARecord` values. Each runtime record stores its validated IPv4 address and TTL:
+The A response is loaded from `records.json` into the zone's generic runtime record store. Each `Record` stores a TTL and validated, wire-ready RDATA:
 
 ```
 example.com.  60  IN  A  1.2.3.4

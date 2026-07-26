@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"testing"
@@ -34,26 +35,34 @@ func TestLoadZone(t *testing.T) {
 		t.Fatalf("zone origin = %q, want %q", zone.Origin, "example.com")
 	}
 
-	example, exists := zone.Records["example.com"]
+	exampleRecords, exists := zone.Records["example.com"]
 	if !exists {
 		t.Fatal(`records["example.com"] does not exist`)
 	}
-	if example.Address != [4]byte{1, 2, 3, 4} {
-		t.Fatalf("example.com address = %v, want [1 2 3 4]", example.Address)
+	if len(exampleRecords[TypeA]) != 1 {
+		t.Fatalf("example.com A record count = %d, want 1", len(exampleRecords[TypeA]))
 	}
+	example := exampleRecords[TypeA][0]
 	if example.TTL != 60 {
 		t.Fatalf("example.com TTL = %d, want 60", example.TTL)
 	}
+	if !bytes.Equal(example.RData, []byte{1, 2, 3, 4}) {
+		t.Fatalf("example.com RDATA = %v, want [1 2 3 4]", example.RData)
+	}
 
-	testRecord, exists := zone.Records["test.example.com"]
+	testRecords, exists := zone.Records["test.example.com"]
 	if !exists {
 		t.Fatal(`records["test.example.com"] does not exist`)
 	}
-	if testRecord.Address != [4]byte{5, 6, 7, 8} {
-		t.Fatalf("test.example.com address = %v, want [5 6 7 8]", testRecord.Address)
+	if len(testRecords[TypeA]) != 1 {
+		t.Fatalf("test.example.com A record count = %d, want 1", len(testRecords[TypeA]))
 	}
+	testRecord := testRecords[TypeA][0]
 	if testRecord.TTL != 300 {
 		t.Fatalf("test.example.com TTL = %d, want 300", testRecord.TTL)
+	}
+	if !bytes.Equal(testRecord.RData, []byte{5, 6, 7, 8}) {
+		t.Fatalf("test.example.com RDATA = %v, want [5 6 7 8]", testRecord.RData)
 	}
 }
 

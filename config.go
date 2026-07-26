@@ -47,7 +47,7 @@ func loadZone(path string) (Zone, error) {
 
 	zone := Zone{
 		Origin:  origin,
-		Records: make(map[string]ARecord, len(config.Records)),
+		Records: make(map[string]map[uint16][]Record, len(config.Records)),
 	}
 
 	for i, configuredRecord := range config.Records {
@@ -62,7 +62,12 @@ func loadZone(path string) (Zone, error) {
 		if !zone.contains(name) {
 			return Zone{}, fmt.Errorf("record %d: name %q is outside zone %q", recordNumber, name, zone.Origin)
 		}
-		if _, exists := zone.Records[name]; exists {
+		recordsByType, exists := zone.Records[name]
+		if !exists {
+			recordsByType = make(map[uint16][]Record)
+			zone.Records[name] = recordsByType
+		}
+		if len(recordsByType[TypeA]) > 0 {
 			return Zone{}, fmt.Errorf("record %d: duplicate name %q", recordNumber, name)
 		}
 
@@ -74,9 +79,12 @@ func loadZone(path string) (Zone, error) {
 			return Zone{}, fmt.Errorf("record %d: address %q is not IPv4", recordNumber, configuredRecord.Address)
 		}
 
-		zone.Records[name] = ARecord{
-			Address: address.As4(),
-			TTL:     configuredRecord.TTL,
+		ipv4 := address.As4()
+		recordsByType[TypeA] = []Record{
+			{
+				TTL:   configuredRecord.TTL,
+				RData: append([]byte(nil), ipv4[:]...),
+			},
 		}
 	}
 
