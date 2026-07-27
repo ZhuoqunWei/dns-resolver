@@ -40,19 +40,53 @@ func TestServeUDPRespondsToQueries(t *testing.T) {
 		name        string
 		query       []byte
 		wantANCount uint16
+		wantNSCount uint16
 		wantRCode   uint16
+		wantAA      bool
+		wantType    uint16
 		wantRData   []byte
 	}{
 		{
 			name:        "configured A record",
 			query:       sampleQueryWithTypeClass(TypeA, ClassIN),
 			wantANCount: 1,
+			wantAA:      true,
+			wantType:    TypeA,
 			wantRData:   []byte{1, 2, 3, 4},
 		},
 		{
-			name:      "missing in-zone name",
-			query:     sampleMissingSubdomainAQuery(),
-			wantRCode: rCodeNXDomain,
+			name:        "configured AAAA record",
+			query:       sampleQueryWithTypeClass(TypeAAAA, ClassIN),
+			wantANCount: 1,
+			wantAA:      true,
+			wantType:    TypeAAAA,
+			wantRData: []byte{
+				0x20, 0x01, 0x0d, 0xb8,
+				0x00, 0x00, 0x00, 0x00,
+				0x00, 0x00, 0x00, 0x00,
+				0x00, 0x00, 0x00, 0x01,
+			},
+		},
+		{
+			name:        "configured SOA record",
+			query:       sampleQueryWithTypeClass(TypeSOA, ClassIN),
+			wantANCount: 1,
+			wantAA:      true,
+			wantType:    TypeSOA,
+			wantRData:   testSOARData(),
+		},
+		{
+			name:        "unsupported type at existing name",
+			query:       sampleQueryWithTypeClass(TypeTXT, ClassIN),
+			wantNSCount: 1,
+			wantAA:      true,
+		},
+		{
+			name:        "missing in-zone name",
+			query:       sampleMissingSubdomainAQuery(),
+			wantNSCount: 1,
+			wantRCode:   rCodeNXDomain,
+			wantAA:      true,
 		},
 		{
 			name:      "out-of-zone name",
@@ -89,15 +123,29 @@ func TestServeUDPRespondsToQueries(t *testing.T) {
 			if anCount != tt.wantANCount {
 				t.Fatalf("ANCOUNT = %d, want %d", anCount, tt.wantANCount)
 			}
+			nsCount := binary.BigEndian.Uint16(response[8:10])
+			if nsCount != tt.wantNSCount {
+				t.Fatalf("NSCOUNT = %d, want %d", nsCount, tt.wantNSCount)
+			}
 
 			flags := binary.BigEndian.Uint16(response[2:4])
 			rCode := flags & 0x000f
 			if rCode != tt.wantRCode {
 				t.Fatalf("RCODE = %d, want %d", rCode, tt.wantRCode)
 			}
+			authoritative := flags&0x0400 != 0
+			if authoritative != tt.wantAA {
+				t.Fatalf("AA = %t, want %t; flags=%016b", authoritative, tt.wantAA, flags)
+			}
 
-			if tt.wantRData != nil && !bytes.Equal(response[len(response)-4:], tt.wantRData) {
-				t.Fatalf("RDATA = %v, want %v", response[len(response)-4:], tt.wantRData)
+			if tt.wantRData != nil {
+				answer := parseTestResourceRecord(t, response, len(tt.query))
+				if answer.Type != tt.wantType {
+					t.Fatalf("answer TYPE = %d, want %d", answer.Type, tt.wantType)
+				}
+				if !bytes.Equal(answer.RData, tt.wantRData) {
+					t.Fatalf("RDATA = %v, want %v", answer.RData, tt.wantRData)
+				}
 			}
 		})
 	}

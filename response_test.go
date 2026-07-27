@@ -7,6 +7,8 @@ import (
 	"testing"
 )
 
+const TypeTXT uint16 = 16
+
 func sampleQueryWithTypeClass(qtype uint16, qclass uint16) []byte {
 	query := []byte{
 		// Header
@@ -114,6 +116,65 @@ func buildTestResponse(t *testing.T, query []byte) []byte {
 	return response
 }
 
+type testResourceRecord struct {
+	Name  string
+	Type  uint16
+	Class uint16
+	TTL   uint32
+	RData []byte
+	Next  int
+}
+
+func parseTestResourceRecord(t *testing.T, message []byte, offset int) testResourceRecord {
+	t.Helper()
+
+	if offset >= len(message) {
+		t.Fatalf("resource record offset %d exceeds message length %d", offset, len(message))
+	}
+
+	var name string
+	if message[offset]&0xc0 == 0xc0 {
+		if offset+2 > len(message) {
+			t.Fatal("truncated resource record name pointer")
+		}
+		pointer := int(binary.BigEndian.Uint16(message[offset:offset+2]) & 0x3fff)
+		var err error
+		name, _, err = parseQName(message, pointer)
+		if err != nil {
+			t.Fatalf("parse resource record name pointer: %v", err)
+		}
+		offset += 2
+	} else {
+		var err error
+		name, offset, err = parseQName(message, offset)
+		if err != nil {
+			t.Fatalf("parse resource record name: %v", err)
+		}
+	}
+
+	if offset+10 > len(message) {
+		t.Fatal("truncated resource record fields")
+	}
+	recordType := binary.BigEndian.Uint16(message[offset : offset+2])
+	class := binary.BigEndian.Uint16(message[offset+2 : offset+4])
+	ttl := binary.BigEndian.Uint32(message[offset+4 : offset+8])
+	rDataLength := int(binary.BigEndian.Uint16(message[offset+8 : offset+10]))
+	rDataStart := offset + 10
+	rDataEnd := rDataStart + rDataLength
+	if rDataEnd > len(message) {
+		t.Fatal("truncated resource record RDATA")
+	}
+
+	return testResourceRecord{
+		Name:  name,
+		Type:  recordType,
+		Class: class,
+		TTL:   ttl,
+		RData: message[rDataStart:rDataEnd],
+		Next:  rDataEnd,
+	}
+}
+
 func TestEncodeQName(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -206,6 +267,10 @@ func TestBuildResponseReturnsAAnswerForTypeAClassIN(t *testing.T) {
 	if ancount != 1 {
 		t.Fatalf("ANCOUNT = %d, want 1", ancount)
 	}
+	flags := binary.BigEndian.Uint16(response[2:4])
+	if flags&0x0400 == 0 {
+		t.Fatalf("AA flag is not set for in-zone answer; flags=%016b", flags)
+	}
 
 	questionEnd := len(query)
 	if !bytes.Equal(response[HeaderSize:questionEnd], query[HeaderSize:]) {
@@ -225,6 +290,61 @@ func TestBuildResponseReturnsAAnswerForTypeAClassIN(t *testing.T) {
 
 	if !bytes.Equal(answer, want) {
 		t.Fatalf("answer = %v, want %v", answer, want)
+	}
+}
+
+func TestBuildResponseReturnsAAAAAnswer(t *testing.T) {
+	query := sampleQueryWithTypeClass(TypeAAAA, ClassIN)
+	response := buildTestResponse(t, query)
+
+	if anCount := binary.BigEndian.Uint16(response[6:8]); anCount != 1 {
+		t.Fatalf("ANCOUNT = %d, want 1", anCount)
+	}
+
+	answer := parseTestResourceRecord(t, response, len(query))
+	if answer.Name != "example.com" {
+		t.Fatalf("answer name = %q, want %q", answer.Name, "example.com")
+	}
+	if answer.Type != TypeAAAA {
+		t.Fatalf("answer TYPE = %d, want %d", answer.Type, TypeAAAA)
+	}
+	if answer.Class != ClassIN {
+		t.Fatalf("answer CLASS = %d, want %d", answer.Class, ClassIN)
+	}
+	if answer.TTL != 120 {
+		t.Fatalf("answer TTL = %d, want 120", answer.TTL)
+	}
+	wantRData := []byte{
+		0x20, 0x01, 0x0d, 0xb8,
+		0x00, 0x00, 0x00, 0x00,
+		0x00, 0x00, 0x00, 0x00,
+		0x00, 0x00, 0x00, 0x01,
+	}
+	if !bytes.Equal(answer.RData, wantRData) {
+		t.Fatalf("answer RDATA = %v, want %v", answer.RData, wantRData)
+	}
+}
+
+func TestBuildResponseReturnsSOAAnswer(t *testing.T) {
+	query := sampleQueryWithTypeClass(TypeSOA, ClassIN)
+	response := buildTestResponse(t, query)
+
+	if anCount := binary.BigEndian.Uint16(response[6:8]); anCount != 1 {
+		t.Fatalf("ANCOUNT = %d, want 1", anCount)
+	}
+	if nsCount := binary.BigEndian.Uint16(response[8:10]); nsCount != 0 {
+		t.Fatalf("NSCOUNT = %d, want 0", nsCount)
+	}
+
+	answer := parseTestResourceRecord(t, response, len(query))
+	if answer.Type != TypeSOA {
+		t.Fatalf("answer TYPE = %d, want %d", answer.Type, TypeSOA)
+	}
+	if answer.TTL != 300 {
+		t.Fatalf("answer TTL = %d, want 300", answer.TTL)
+	}
+	if !bytes.Equal(answer.RData, testSOARData()) {
+		t.Fatalf("answer RDATA = %v, want %v", answer.RData, testSOARData())
 	}
 }
 
@@ -315,15 +435,36 @@ func TestBuildResponseReturnsNXDOMAINForMissingInZoneName(t *testing.T) {
 	if ancount != 0 {
 		t.Fatalf("ANCOUNT = %d, want 0", ancount)
 	}
+	nsCount := binary.BigEndian.Uint16(response[8:10])
+	if nsCount != 1 {
+		t.Fatalf("NSCOUNT = %d, want 1", nsCount)
+	}
 
 	flags := binary.BigEndian.Uint16(response[2:4])
 	rcode := flags & 0x000f
 	if rcode != rCodeNXDomain {
 		t.Fatalf("RCODE = %d, want %d (NXDOMAIN)", rcode, rCodeNXDomain)
 	}
+	if flags&0x0400 == 0 {
+		t.Fatalf("AA flag is not set for in-zone NXDOMAIN; flags=%016b", flags)
+	}
 
-	if !bytes.Equal(response[HeaderSize:], query[HeaderSize:]) {
-		t.Fatalf("response question = %v, want %v", response[HeaderSize:], query[HeaderSize:])
+	if !bytes.Equal(response[HeaderSize:len(query)], query[HeaderSize:]) {
+		t.Fatalf("response question = %v, want %v", response[HeaderSize:len(query)], query[HeaderSize:])
+	}
+
+	authority := parseTestResourceRecord(t, response, len(query))
+	if authority.Name != "example.com" {
+		t.Fatalf("authority name = %q, want %q", authority.Name, "example.com")
+	}
+	if authority.Type != TypeSOA {
+		t.Fatalf("authority TYPE = %d, want %d", authority.Type, TypeSOA)
+	}
+	if authority.TTL != 120 {
+		t.Fatalf("negative SOA TTL = %d, want 120", authority.TTL)
+	}
+	if !bytes.Equal(authority.RData, testSOARData()) {
+		t.Fatalf("authority RDATA = %v, want %v", authority.RData, testSOARData())
 	}
 }
 
@@ -341,6 +482,12 @@ func TestBuildResponseReturnsRefusedForOutOfZoneName(t *testing.T) {
 	if rcode != rCodeRefused {
 		t.Fatalf("RCODE = %d, want %d (REFUSED)", rcode, rCodeRefused)
 	}
+	if flags&0x0400 != 0 {
+		t.Fatalf("AA flag is set for refused out-of-zone query; flags=%016b", flags)
+	}
+	if nsCount := binary.BigEndian.Uint16(response[8:10]); nsCount != 0 {
+		t.Fatalf("NSCOUNT = %d, want 0", nsCount)
+	}
 
 	if !bytes.Equal(response[HeaderSize:], query[HeaderSize:]) {
 		t.Fatalf("response question = %v, want %v", response[HeaderSize:], query[HeaderSize:])
@@ -348,7 +495,7 @@ func TestBuildResponseReturnsRefusedForOutOfZoneName(t *testing.T) {
 }
 
 func TestBuildResponseNoAnswerForUnsupportedType(t *testing.T) {
-	query := sampleQueryWithTypeClass(TypeAAAA, ClassIN)
+	query := sampleQueryWithTypeClass(TypeTXT, ClassIN)
 	response := buildTestResponse(t, query)
 
 	ancount := binary.BigEndian.Uint16(response[6:8])
@@ -361,9 +508,19 @@ func TestBuildResponseNoAnswerForUnsupportedType(t *testing.T) {
 	if rcode != 0 {
 		t.Fatalf("RCODE = %d, want 0 (NOERROR)", rcode)
 	}
+	if flags&0x0400 == 0 {
+		t.Fatalf("AA flag is not set for in-zone NODATA; flags=%016b", flags)
+	}
+	if nsCount := binary.BigEndian.Uint16(response[8:10]); nsCount != 1 {
+		t.Fatalf("NSCOUNT = %d, want 1", nsCount)
+	}
 
-	if len(response) != len(query) {
-		t.Fatalf("response length = %d, want %d", len(response), len(query))
+	authority := parseTestResourceRecord(t, response, len(query))
+	if authority.Type != TypeSOA {
+		t.Fatalf("authority TYPE = %d, want %d", authority.Type, TypeSOA)
+	}
+	if authority.TTL != 120 {
+		t.Fatalf("negative SOA TTL = %d, want 120", authority.TTL)
 	}
 }
 
@@ -377,8 +534,28 @@ func TestBuildResponseNoAnswerForUnsupportedClass(t *testing.T) {
 	if ancount != 0 {
 		t.Fatalf("ANCOUNT = %d, want 0", ancount)
 	}
+	flags := binary.BigEndian.Uint16(response[2:4])
+	if flags&0x0400 != 0 {
+		t.Fatalf("AA flag is set for unsupported class; flags=%016b", flags)
+	}
+	if nsCount := binary.BigEndian.Uint16(response[8:10]); nsCount != 0 {
+		t.Fatalf("NSCOUNT = %d, want 0", nsCount)
+	}
 
 	if len(response) != len(query) {
 		t.Fatalf("response length = %d, want %d", len(response), len(query))
+	}
+}
+
+func TestAppendResourceRecordRejectsOversizedRData(t *testing.T) {
+	_, err := appendResourceRecord(nil, responseRecord{
+		Name: "example.com",
+		Type: TypeA,
+		Record: Record{
+			RData: make([]byte, 0x10000),
+		},
+	})
+	if err == nil {
+		t.Fatal("appendResourceRecord returned nil error for oversized RDATA")
 	}
 }

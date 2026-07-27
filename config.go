@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -12,7 +13,19 @@ import (
 
 type zoneConfig struct {
 	Origin  string         `json:"origin"`
+	SOA     soaConfig      `json:"soa"`
 	Records []recordConfig `json:"records"`
+}
+
+type soaConfig struct {
+	NameServer      string `json:"nameServer"`
+	ResponsibleName string `json:"responsibleName"`
+	Serial          uint32 `json:"serial"`
+	Refresh         uint32 `json:"refresh"`
+	Retry           uint32 `json:"retry"`
+	Expire          uint32 `json:"expire"`
+	Minimum         uint32 `json:"minimum"`
+	TTL             uint32 `json:"ttl"`
 }
 
 type recordConfig struct {
@@ -48,7 +61,15 @@ func loadZone(path string) (Zone, error) {
 
 	zone := Zone{
 		Origin:  origin,
-		Records: make(map[string]map[uint16][]Record, len(config.Records)),
+		Records: make(map[string]map[uint16][]Record, len(config.Records)+1),
+	}
+
+	soaRecord, err := parseSOARecord(config.SOA)
+	if err != nil {
+		return Zone{}, fmt.Errorf("invalid SOA: %w", err)
+	}
+	zone.Records[origin] = map[uint16][]Record{
+		TypeSOA: []Record{soaRecord},
 	}
 
 	for i, configuredRecord := range config.Records {
@@ -91,6 +112,48 @@ func loadZone(path string) (Zone, error) {
 	}
 
 	return zone, nil
+}
+
+func parseSOARecord(config soaConfig) (Record, error) {
+	nameServer := canonicalName(strings.TrimSpace(config.NameServer))
+	if nameServer == "" {
+		return Record{}, fmt.Errorf("nameServer is required")
+	}
+	encodedNameServer, err := encodeQName(nameServer)
+	if err != nil {
+		return Record{}, fmt.Errorf("invalid nameServer %q: %w", config.NameServer, err)
+	}
+
+	responsibleName := canonicalName(strings.TrimSpace(config.ResponsibleName))
+	if responsibleName == "" {
+		return Record{}, fmt.Errorf("responsibleName is required")
+	}
+	encodedResponsibleName, err := encodeQName(responsibleName)
+	if err != nil {
+		return Record{}, fmt.Errorf("invalid responsibleName %q: %w", config.ResponsibleName, err)
+	}
+
+	rData := make([]byte, 0, len(encodedNameServer)+len(encodedResponsibleName)+20)
+	rData = append(rData, encodedNameServer...)
+	rData = append(rData, encodedResponsibleName...)
+
+	values := [...]uint32{
+		config.Serial,
+		config.Refresh,
+		config.Retry,
+		config.Expire,
+		config.Minimum,
+	}
+	for _, value := range values {
+		var encoded [4]byte
+		binary.BigEndian.PutUint32(encoded[:], value)
+		rData = append(rData, encoded[:]...)
+	}
+
+	return Record{
+		TTL:   config.TTL,
+		RData: rData,
+	}, nil
 }
 
 func parseAddressRecord(recordType string, value string) (uint16, []byte, error) {

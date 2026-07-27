@@ -4,7 +4,7 @@
 
 This project is a small DNS server written in Go to learn DNS wire-format parsing, UDP networking, and DNS response construction.
 
-It is not a recursive resolver. It listens locally on `127.0.0.1:8053`, parses one DNS question, and returns configured IPv4 answers for `A` queries in the `IN` class. Missing names inside the configured zone return `NXDOMAIN`, names outside the zone return `REFUSED`, and unsupported types on existing names receive a valid response with no answer records.
+It is not a recursive resolver. It listens locally on `127.0.0.1:8053`, parses one DNS question, and serves authoritative A, AAAA, and SOA data for one configured zone. Negative in-zone responses include the zone SOA, while names outside the zone return `REFUSED`.
 
 ## Architecture Diagram
 
@@ -25,18 +25,25 @@ flowchart LR
         Handler["handlePacket"]
         Parser["parseMessage"]
         Message["Message<br/>Header, Flags, Question"]
-        Builder["buildResponse"]
+        Planner["planResponse<br/>select sections and RCODE"]
+        Plan["responsePlan<br/>answers and authorities"]
+        Builder["buildResponse<br/>header and question"]
+        Encoder["appendResourceRecord"]
 
         Client -->|"UDP query bytes"| UDP
         UDP --> Handler
         Handler --> Parser
         Parser --> Message
+        Message --> Planner
+        Planner --> Plan
         Message --> Builder
-        Builder -->|"DNS response bytes"| UDP
+        Plan --> Builder
+        Builder --> Encoder
+        Encoder -->|"DNS response bytes"| UDP
         UDP -->|"UDP response"| Client
     end
 
-    ZoneStore -->|"read-only lookup"| Builder
+    ZoneStore -->|"read-only lookup"| Planner
 ```
 
 The configuration file is read once before the UDP socket is opened. The validated runtime zone is then reused for every query.
@@ -59,7 +66,7 @@ The server receives the query, parses `example.com`, builds an answer for `1.2.3
 
 ### 1. Load configured records
 
-`main.go` calls `loadZone` with `records.json`. The loader decodes the JSON, canonicalizes the origin, names, and types, validates A and AAAA address families, rejects duplicate name-and-type pairs and out-of-zone records, and creates the runtime `Zone`.
+`main.go` calls `loadZone` with `records.json`. The loader decodes the JSON, canonicalizes the origin, names, and types, validates A and AAAA address families, encodes the zone SOA, rejects duplicate name-and-type pairs and out-of-zone records, and creates the runtime `Zone`.
 
 If the file cannot be read or validated, the program exits before opening the UDP socket.
 
@@ -91,54 +98,63 @@ The parser returns errors for truncated or malformed packets. `handlePacket` ret
 
 After a query is successfully parsed, `handlePacket` calls `buildResponse` in `response.go`.
 
-`buildResponse` receives the parsed `Message` and `Zone` from `main.go`. Each `Record` contains a TTL and wire-ready RDATA. The builder classifies the query against the zone, encodes a new question section, and constructs the DNS response from the parsed fields and selected record:
+`buildResponse` receives the parsed `Message` and `Zone` from `main.go`. Each `Record` contains a TTL and wire-ready RDATA. It asks `planResponse` to classify the query before writing any bytes:
+
+- A matching A, AAAA, or SOA record is placed in the answer section.
+- A missing in-zone owner produces `NXDOMAIN` and places the zone SOA in the authority section.
+- A known owner with no matching type produces `NOERROR`/NODATA and places the zone SOA in the authority section.
+- An out-of-zone name produces `REFUSED` without an authority record.
+
+The builder then constructs the DNS response:
 
 - Copies the transaction ID from the query so `dig` can match the reply to its request.
 - Sets `QR = 1` to mark the packet as a response.
 - Copies `RD` from the query.
 - Leaves `RA = 0` because this server does not provide recursive resolution.
+- Sets `AA = 1` for responses concerning names inside the configured zone.
 - Sets `QDCOUNT = 1` and copies the original question into the response.
-- Sets `ANCOUNT = 1` only when the queried name has a configured `A / IN` record; otherwise it sets `ANCOUNT = 0`.
-- Sets `RCODE = NXDOMAIN` when the queried name is missing inside the zone.
-- Sets `RCODE = REFUSED` when the queried name is outside the zone.
+- Sets answer and authority counts from the selected records.
 
-For the configured `example.com A / IN` query, the answer section contains:
+`appendResourceRecord` serializes each selected record using the common resource-record layout:
 
 ```text
-NAME     0xc00c  (pointer to the original QNAME at byte 12)
-TYPE     1       (A)
-CLASS    1       (IN)
-TTL      60
-RDLENGTH 4
-RDATA    1.2.3.4
+NAME      compressed pointer or encoded owner name
+TYPE      2 bytes
+CLASS     2 bytes
+TTL       4 bytes
+RDLENGTH  2 bytes
+RDATA     RDLENGTH bytes
 ```
 
-The `0xc00c` name uses DNS compression in the response. It points back to the encoded QNAME at byte 12 instead of encoding the domain name again in the answer.
+Positive answers use `0xc00c`, a pointer to the queried name at byte 12. A negative SOA authority record encodes the zone origin explicitly because its owner can differ from the queried name. SOA names inside RDATA are currently uncompressed, which is valid DNS wire format.
+
+For negative caching, the SOA record in the authority section uses the smaller of its record TTL and SOA MINIMUM value.
 
 ### 5. Send the response
 
 `serveUDP` sends the bytes returned by `handlePacket` to the original sender address with `WriteToUDP`. `dig` receives the response and displays either:
 
-- The configured `A` answer for a known name.
-- `NXDOMAIN` for a missing name inside the zone.
+- A configured A, AAAA, or SOA answer.
+- `NXDOMAIN` with an SOA authority record for a missing name inside the zone.
+- `NOERROR` with an SOA authority record for a missing type on an existing name.
 - `REFUSED` for a name outside the zone.
-- A valid DNS response with `ANSWER: 0` for unsupported types on known names, such as `example.com AAAA`.
 
 ## File Responsibilities
 
 | File | Responsibility |
 | --- | --- |
 | `main.go` | Loads configured records, opens the UDP socket, and starts the server loop. |
-| `config.go` | Reads and validates typed A/AAAA JSON configuration, then converts values into wire-ready runtime records. |
-| `config_test.go` | Tests origin, record type, address-family, canonicalization, malformed input, duplicate, and zone-boundary validation. |
-| `records.json` | Defines the zone origin and A records loaded when the server starts. |
+| `config.go` | Reads and validates A/AAAA/SOA JSON configuration, then converts values into wire-ready runtime records. |
+| `config_test.go` | Tests SOA encoding, origin, record type, address-family, canonicalization, malformed input, duplicate, and zone-boundary validation. |
+| `records.json` | Defines the zone origin, SOA metadata, and address records loaded when the server starts. |
 | `record.go` | Defines the generic runtime record containing TTL and wire-ready RDATA. |
 | `zone.go` | Groups the origin and records by owner name and DNS type, and classifies names as in-zone or out-of-zone. |
 | `zone_test.go` | Tests zone-boundary matching and owner-name existence. |
 | `server.go` | Receives and sends UDP packets, coordinates parsing and response building, and logs query results. |
-| `server_test.go` | Sends real queries over a loopback UDP socket and verifies the returned responses. |
+| `server_test.go` | Sends A, AAAA, SOA, NODATA, NXDOMAIN, and REFUSED queries over a loopback UDP socket. |
 | `dns.go` | Parses DNS headers, flags, QNAMEs, questions, and one complete DNS message. |
-| `response.go` | Encodes a DNS response from a parsed message and explicitly supplied records, including the question and optional A answer. |
+| `response_plan.go` | Applies zone policy and selects answer and authority records for a query. |
+| `response.go` | Encodes response headers, questions, and general DNS resource records. |
 | `dns_test.go` | Tests parser behavior and malformed DNS query handling. |
 | `response_test.go` | Tests response flags, answer counts, answer bytes, and unsupported query behavior. |
 | `README.md` | Provides setup instructions, `dig` demos, DNS wire-format background, and limitations. |
@@ -148,14 +164,16 @@ The `0xc00c` name uses DNS compression in the response. It points back to the en
 | Query | Result |
 | --- | --- |
 | `example.com A / IN` | Returns `1.2.3.4` with TTL 60. |
+| `example.com AAAA / IN` | Returns `2001:db8::1` with TTL 120. |
+| `example.com SOA / IN` | Returns the configured zone SOA. |
 | `test.example.com A / IN` | Returns `5.6.7.8` with TTL 300. |
-| Missing name inside `example.com` | Returns `NXDOMAIN` with no answers. |
+| Missing name inside `example.com` | Returns authoritative `NXDOMAIN` with the SOA in the authority section. |
 | Name outside `example.com` | Returns `REFUSED` with no answers. |
-| Unsupported type on a configured name | Returns `NOERROR` with no answers. |
+| Unsupported type on a configured name | Returns authoritative `NOERROR`/NODATA with the SOA in the authority section. |
 | Unsupported class | Returns a valid response with no answers. |
 | Malformed packet | Logs a parse or response-building error and keeps the UDP server running. |
 
-The current response is selected by zone membership, owner-name existence, QTYPE, and QCLASS. The answer RDATA and TTL come from the selected `Record`.
+The response plan is selected by zone membership, owner-name existence, QTYPE, and QCLASS. Answer and authority RDATA come from the selected runtime records.
 
 ## Design Decisions
 
@@ -168,11 +186,14 @@ The current response is selected by zone membership, owner-name existence, QTYPE
 - Runtime records use `Records[name][type][]Record`, allowing multiple types and multiple records per owner without changing the zone shape.
 - Configuration parsing converts human-readable values into validated, wire-ready RDATA once during startup.
 - A values become four-byte RDATA under `TypeA`; AAAA values become sixteen-byte RDATA under `TypeAAAA`.
+- SOA metadata becomes wire-ready RDATA under `TypeSOA` at the zone origin.
+- Response policy is separate from wire encoding so new record types do not require duplicating header or section logic.
+- Negative SOA TTLs follow the DNS negative-caching rule: `min(SOA TTL, SOA MINIMUM)`.
 - Zone membership requires either the exact origin or a label-delimited subdomain, so `badexample.com` is not inside `example.com`.
 - Configuration is validated and converted into runtime records once during startup rather than parsed for each query.
 - The server accepts one question per message to keep the first implementation understandable.
 - The server reports `RA = 0` because it does not recursively resolve or forward queries.
-- The response uses compression only when writing the answer. Incoming compressed QNAMEs are not supported yet.
+- The response uses compression for answer owner names. Incoming compressed QNAMEs are not supported yet.
 
 ## Current Limitations
 
@@ -183,7 +204,7 @@ The current response is selected by zone membership, owner-name existence, QTYPE
 - No recursive resolution, upstream forwarding, or caching.
 - Configuration changes require restarting the server; live reload is not supported.
 - One configured zone only.
-- The JSON loader supports A and AAAA records, but the response builder currently emits A answers only.
+- Configurable address records are limited to A and AAAA; SOA is configured separately for the zone.
 
 ## Verification
 
@@ -193,4 +214,4 @@ Run the unit tests:
 go test -count=1 ./...
 ```
 
-The test suite starts the server on an operating-system-assigned loopback UDP port and verifies configured, missing in-zone, and out-of-zone responses through a real socket. You can also run the server and use the `dig` commands in `README.md` for a manual demo.
+The test suite starts the server on an operating-system-assigned loopback UDP port and verifies A, AAAA, SOA, NODATA, NXDOMAIN, and REFUSED responses through a real socket. You can also run the server and use the `dig` commands in `README.md` for a manual demo.

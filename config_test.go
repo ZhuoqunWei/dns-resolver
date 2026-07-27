@@ -2,10 +2,23 @@ package main
 
 import (
 	"bytes"
+	"encoding/binary"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
 )
+
+const validSOAConfig = `"soa": {
+	"nameServer": "ns1.example.com",
+	"responsibleName": "hostmaster.example.com",
+	"serial": 2026072501,
+	"refresh": 3600,
+	"retry": 600,
+	"expire": 86400,
+	"minimum": 120,
+	"ttl": 300
+}`
 
 func writeRecordsConfig(t *testing.T, content string) string {
 	t.Helper()
@@ -18,15 +31,20 @@ func writeRecordsConfig(t *testing.T, content string) string {
 	return path
 }
 
+func validRecordsConfig(records string) string {
+	return fmt.Sprintf(`{"origin": "example.com", %s, "records": %s}`, validSOAConfig, records)
+}
+
 func TestLoadZone(t *testing.T) {
-	path := writeRecordsConfig(t, `{
+	path := writeRecordsConfig(t, fmt.Sprintf(`{
 		"origin": "Example.COM.",
+		%s,
 		"records": [
 			{"name": "Example.COM.", "type": "A", "value": "1.2.3.4", "ttl": 60},
 			{"name": "Example.COM.", "type": "aaaa", "value": "2001:db8::1", "ttl": 120},
 			{"name": "test.example.com", "type": "A", "value": "5.6.7.8", "ttl": 300}
 		]
-	}`)
+	}`, validSOAConfig))
 
 	zone, err := loadZone(path)
 	if err != nil {
@@ -66,6 +84,38 @@ func TestLoadZone(t *testing.T) {
 	if !bytes.Equal(exampleAAAA.RData, wantAAAA) {
 		t.Fatalf("example.com AAAA RDATA = %v, want %v", exampleAAAA.RData, wantAAAA)
 	}
+	if len(exampleRecords[TypeSOA]) != 1 {
+		t.Fatalf("example.com SOA record count = %d, want 1", len(exampleRecords[TypeSOA]))
+	}
+	soa := exampleRecords[TypeSOA][0]
+	if soa.TTL != 300 {
+		t.Fatalf("example.com SOA TTL = %d, want 300", soa.TTL)
+	}
+
+	nameServer, offset, err := parseQName(soa.RData, 0)
+	if err != nil {
+		t.Fatalf("parse SOA name server: %v", err)
+	}
+	responsibleName, offset, err := parseQName(soa.RData, offset)
+	if err != nil {
+		t.Fatalf("parse SOA responsible name: %v", err)
+	}
+	if nameServer != "ns1.example.com" {
+		t.Fatalf("SOA name server = %q, want %q", nameServer, "ns1.example.com")
+	}
+	if responsibleName != "hostmaster.example.com" {
+		t.Fatalf("SOA responsible name = %q, want %q", responsibleName, "hostmaster.example.com")
+	}
+	if len(soa.RData) != offset+20 {
+		t.Fatalf("SOA RDATA length = %d, want %d", len(soa.RData), offset+20)
+	}
+	wantSOAValues := [...]uint32{2026072501, 3600, 600, 86400, 120}
+	for i, want := range wantSOAValues {
+		got := binary.BigEndian.Uint32(soa.RData[offset+i*4 : offset+(i+1)*4])
+		if got != want {
+			t.Fatalf("SOA value %d = %d, want %d", i, got, want)
+		}
+	}
 
 	testRecords, exists := zone.Records["test.example.com"]
 	if !exists {
@@ -94,53 +144,87 @@ func TestLoadZoneRejectsInvalidConfiguration(t *testing.T) {
 		},
 		{
 			name:    "unknown field",
-			content: `{"origin": "example.com", "records": [{"name": "example.com", "type": "A", "value": "1.2.3.4", "tll": 60}]}`,
+			content: fmt.Sprintf(`{"origin": "example.com", %s, "records": [], "unexpected": true}`, validSOAConfig),
 		},
 		{
 			name:    "missing origin",
-			content: `{"records": [{"name": "example.com", "type": "A", "value": "1.2.3.4", "ttl": 60}]}`,
+			content: fmt.Sprintf(`{%s, "records": []}`, validSOAConfig),
 		},
 		{
 			name:    "invalid origin",
-			content: `{"origin": "example..com", "records": []}`,
+			content: fmt.Sprintf(`{"origin": "example..com", %s, "records": []}`, validSOAConfig),
+		},
+		{
+			name:    "missing SOA",
+			content: `{"origin": "example.com", "records": []}`,
+		},
+		{
+			name: "invalid SOA name server",
+			content: `{
+				"origin": "example.com",
+				"soa": {
+					"nameServer": "ns1..example.com",
+					"responsibleName": "hostmaster.example.com",
+					"serial": 1,
+					"refresh": 3600,
+					"retry": 600,
+					"expire": 86400,
+					"minimum": 120,
+					"ttl": 300
+				},
+				"records": []
+			}`,
+		},
+		{
+			name: "missing SOA responsible name",
+			content: `{
+				"origin": "example.com",
+				"soa": {
+					"nameServer": "ns1.example.com",
+					"serial": 1,
+					"refresh": 3600,
+					"retry": 600,
+					"expire": 86400,
+					"minimum": 120,
+					"ttl": 300
+				},
+				"records": []
+			}`,
 		},
 		{
 			name:    "empty name",
-			content: `{"origin": "example.com", "records": [{"name": "", "type": "A", "value": "1.2.3.4", "ttl": 60}]}`,
+			content: validRecordsConfig(`[{"name": "", "type": "A", "value": "1.2.3.4", "ttl": 60}]`),
 		},
 		{
 			name:    "invalid name",
-			content: `{"origin": "example.com", "records": [{"name": "example..com", "type": "A", "value": "1.2.3.4", "ttl": 60}]}`,
+			content: validRecordsConfig(`[{"name": "example..com", "type": "A", "value": "1.2.3.4", "ttl": 60}]`),
 		},
 		{
 			name:    "record outside zone",
-			content: `{"origin": "example.com", "records": [{"name": "other.com", "type": "A", "value": "1.2.3.4", "ttl": 60}]}`,
+			content: validRecordsConfig(`[{"name": "other.com", "type": "A", "value": "1.2.3.4", "ttl": 60}]`),
 		},
 		{
 			name:    "unsupported type",
-			content: `{"origin": "example.com", "records": [{"name": "example.com", "type": "TXT", "value": "hello", "ttl": 60}]}`,
+			content: validRecordsConfig(`[{"name": "example.com", "type": "TXT", "value": "hello", "ttl": 60}]`),
 		},
 		{
 			name:    "invalid A value",
-			content: `{"origin": "example.com", "records": [{"name": "example.com", "type": "A", "value": "not-an-ip", "ttl": 60}]}`,
+			content: validRecordsConfig(`[{"name": "example.com", "type": "A", "value": "not-an-ip", "ttl": 60}]`),
 		},
 		{
 			name:    "IPv6 value for A",
-			content: `{"origin": "example.com", "records": [{"name": "example.com", "type": "A", "value": "2001:db8::1", "ttl": 60}]}`,
+			content: validRecordsConfig(`[{"name": "example.com", "type": "A", "value": "2001:db8::1", "ttl": 60}]`),
 		},
 		{
 			name:    "IPv4 value for AAAA",
-			content: `{"origin": "example.com", "records": [{"name": "example.com", "type": "AAAA", "value": "1.2.3.4", "ttl": 60}]}`,
+			content: validRecordsConfig(`[{"name": "example.com", "type": "AAAA", "value": "1.2.3.4", "ttl": 60}]`),
 		},
 		{
 			name: "duplicate canonical name and type",
-			content: `{
-				"origin": "example.com",
-				"records": [
+			content: validRecordsConfig(`[
 					{"name": "example.com", "type": "A", "value": "1.2.3.4", "ttl": 60},
 					{"name": "EXAMPLE.COM.", "type": "a", "value": "5.6.7.8", "ttl": 300}
-				]
-			}`,
+				]`),
 		},
 	}
 

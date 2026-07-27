@@ -1,11 +1,27 @@
 {
   "origin": "example.com",
+  "soa": {
+    "nameServer": "ns1.example.com",
+    "responsibleName": "hostmaster.example.com",
+    "serial": 2026072501,
+    "refresh": 3600,
+    "retry": 600,
+    "expire": 86400,
+    "minimum": 300,
+    "ttl": 300
+  },
   "records": [
     {
       "name": "example.com",
       "type": "A",
       "value": "1.2.3.4",
       "ttl": 60
+    },
+    {
+      "name": "example.com",
+      "type": "AAAA",
+      "value": "2001:db8::1",
+      "ttl": 120
     },
     {
       "name": "test.example.com",

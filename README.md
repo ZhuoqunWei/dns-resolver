@@ -4,7 +4,7 @@
 
 A small DNS server written in Go as part of a systems/networking learning project.
 
-The current version can parse basic DNS query messages from raw bytes, listen for UDP DNS queries on `127.0.0.1:8053`, and return a minimal DNS response. It serves one configured zone and returns matching IPv4 addresses and TTLs loaded from `records.json`.
+The current version can parse basic DNS query messages from raw bytes, listen for UDP DNS queries on `127.0.0.1:8053`, and serve one authoritative zone. It returns configured IPv4, IPv6, and SOA records loaded from `records.json`.
 
 This is not a recursive resolver yet. It does not forward queries to upstream DNS servers, perform caching, or dynamically resolve real domain names.
 
@@ -21,9 +21,12 @@ The server currently supports:
 * Parsing one complete DNS query message with exactly one question
 * Listening for UDP DNS queries on 127.0.0.1:8053
 * Building a valid DNS response packet
-* Returning configured A records for TypeA / ClassIN
-* Returning NXDOMAIN for names that are not configured
-* Returning a valid response with ANCOUNT = 0 for unsupported query types or classes on configured names
+* Returning configured A, AAAA, and SOA records for ClassIN
+* Setting AA on responses for names inside the configured zone
+* Returning NXDOMAIN with the zone SOA for missing in-zone names
+* Returning NOERROR with the zone SOA for missing record types on existing names
+* Returning REFUSED for names outside the configured zone
+* Returning a valid empty response for unsupported query classes
 * Returning clear errors for malformed or truncated input
 
 The main parser function is:
@@ -240,25 +243,39 @@ Question.QClass = 1
 
 ## Running the UDP DNS Server
 
-The server loads `records.json` once during startup. Each entry provides a domain name, record type, textual value, and TTL:
+The server loads `records.json` once during startup. The file defines the zone origin, its SOA metadata, and address records:
 
 ```json
 {
   "origin": "example.com",
+  "soa": {
+    "nameServer": "ns1.example.com",
+    "responsibleName": "hostmaster.example.com",
+    "serial": 2026072501,
+    "refresh": 3600,
+    "retry": 600,
+    "expire": 86400,
+    "minimum": 300,
+    "ttl": 300
+  },
   "records": [
     {
       "name": "example.com",
       "type": "A",
       "value": "1.2.3.4",
       "ttl": 60
+    },
+    {
+      "name": "example.com",
+      "type": "AAAA",
+      "value": "2001:db8::1",
+      "ttl": 120
     }
   ]
 }
 ```
 
-The loader accepts `A` and `AAAA` address records and converts their values into four-byte or sixteen-byte RDATA. The origin defines the zone served by this process. Names and type strings are normalized for case-insensitive lookup. Invalid names, unsupported types, address-family mismatches, duplicate normalized name-and-type pairs, and records outside the configured zone prevent the server from starting.
-
-AAAA values can be validated and stored, but AAAA response encoding is intentionally deferred to the next ticket.
+The loader converts A, AAAA, and SOA values into wire-ready RDATA. The origin defines the zone served by this process. Names and type strings are normalized for case-insensitive lookup. Invalid names, unsupported types, address-family mismatches, duplicate normalized name-and-type pairs, and records outside the configured zone prevent the server from starting.
 
 Start the server:
 ```
@@ -271,10 +288,11 @@ The server listens on:
 ```
 
 `Port 8053` is used instead of port `53` because port `53` often requires elevated permissions, and port `5353` may already be used by system services such as mDNS.
-```
+
 Expected startup output:
 
-DNS UDP server listening on `127.0.0.1:8053`
+```text
+DNS UDP server listening on 127.0.0.1:8053
 ```
 
 ## Demo: A Query
@@ -288,7 +306,7 @@ This asks the local DNS server for the IPv4 address of example.com.
 Expected behavior:
 ```
 ;; ->>HEADER<<- opcode: QUERY, status: NOERROR
-;; flags: qr rd; QUERY: 1, ANSWER: 1, AUTHORITY: 0, ADDITIONAL: 0
+;; flags: qr aa rd; QUERY: 1, ANSWER: 1, AUTHORITY: 0, ADDITIONAL: 0
 ;; WARNING: recursion requested but not available
 
 ;; QUESTION SECTION:
@@ -315,29 +333,41 @@ This asks the local DNS server for the IPv6 address of example.com.
 Expected behavior:
 ```
 ;; ->>HEADER<<- opcode: QUERY, status: NOERROR
-;; flags: qr rd; QUERY: 1, ANSWER: 0, AUTHORITY: 0, ADDITIONAL: 0
+;; flags: qr aa rd; QUERY: 1, ANSWER: 1, AUTHORITY: 0, ADDITIONAL: 0
 ;; WARNING: recursion requested but not available
 
 ;; QUESTION SECTION:
 ;example.com.                   IN      AAAA
+
+;; ANSWER SECTION:
+example.com.            120     IN      AAAA    2001:db8::1
 ```
-AAAA queries are unsupported for now, so the server returns a valid DNS response with:
 
-ANSWER: `0`
+The same general resource-record encoder writes both A and AAAA answers. The configured RDATA determines whether the payload is four or sixteen bytes.
 
-This confirms that unsupported query types do not receive fake answers.
+Query the zone metadata directly with:
+
+```bash
+dig +noedns @127.0.0.1 -p 8053 example.com SOA
+```
+
+The response contains the configured SOA in the answer section.
 
 ## Response Behavior
 
 Current response behavior:
 ```
 example.com A      -> NOERROR, ANSWER: 1, 1.2.3.4
+example.com AAAA   -> NOERROR, ANSWER: 1, 2001:db8::1
+example.com SOA    -> NOERROR, ANSWER: 1
 test.example.com A -> NOERROR, ANSWER: 1, 5.6.7.8
-missing.example.com A -> NXDOMAIN, ANSWER: 0
-other.com A        -> REFUSED, ANSWER: 0
-example.com AAAA   -> NOERROR, ANSWER: 0
+missing.example.com A -> NXDOMAIN, ANSWER: 0, AUTHORITY: SOA
+example.com TXT    -> NOERROR, ANSWER: 0, AUTHORITY: SOA
+other.com A        -> REFUSED, ANSWER: 0, AUTHORITY: 0
 ```
-An unknown name inside the configured zone returns NXDOMAIN. A name outside the zone returns REFUSED. A configured name queried for an unsupported record type returns NOERROR with an empty answer section. Every response uses the same transaction ID as the query, sets QR = true, copies RD from the query, and sets RA = false.
+An unknown name inside the configured zone returns NXDOMAIN. A configured name queried for a missing type returns NOERROR/NODATA. Both negative responses include the zone SOA in the authority section so clients can cache the result. The negative SOA TTL is the smaller of the SOA TTL and MINIMUM values. A name outside the zone returns REFUSED without claiming authority.
+
+Every response uses the same transaction ID as the query, sets QR, copies RD, and leaves RA unset. Responses for the configured zone also set AA.
 
 The answer section uses DNS name compression:
 
@@ -363,12 +393,14 @@ Additional behavior coverage includes:
 
 - Packet handler rejects malformed queries
 - Response builder does not set `RA`
-- Response builder returns configured answers only for `TypeA / ClassIN`
-- Response builder returns NXDOMAIN for missing in-zone names
+- Response builder returns configured A, AAAA, and SOA answers for `ClassIN`
+- Response builder sets AA for in-zone answers
+- Response builder returns NXDOMAIN plus an SOA authority record for missing in-zone names
+- Response builder returns NOERROR/NODATA plus an SOA authority record for missing types
 - Response builder returns REFUSED for out-of-zone names
-- Response builder returns NOERROR with `ANCOUNT = 0` for unsupported query types on configured names
-- Loopback UDP integration for configured and unknown-name queries
-- JSON loader accepts valid A and AAAA records and rejects malformed configuration
+- General resource-record encoding rejects oversized RDATA
+- Loopback UDP integration covers A, AAAA, SOA, NODATA, NXDOMAIN, and REFUSED
+- JSON loader accepts valid A, AAAA, and SOA data and rejects malformed configuration
 
 ## Current Limitations
 
@@ -384,6 +416,7 @@ This project intentionally does not support everything yet.
 - Does not implement caching yet
 - Loads configuration only at startup; live reload is not supported yet
 - Serves one configured zone
+- Configurable address records are limited to A and AAAA
 
 These limitations are intentional because the current milestone is focused on understanding DNS query parsing, UDP packet handling, and minimal DNS response construction.
 

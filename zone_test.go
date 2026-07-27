@@ -1,6 +1,30 @@
 package main
 
-import "testing"
+import (
+	"encoding/binary"
+	"testing"
+)
+
+func testSOARData() []byte {
+	nameServer, err := encodeQName("ns1.example.com")
+	if err != nil {
+		panic(err)
+	}
+	responsibleName, err := encodeQName("hostmaster.example.com")
+	if err != nil {
+		panic(err)
+	}
+
+	rData := append(nameServer, responsibleName...)
+	values := [...]uint32{2026072501, 3600, 600, 86400, 120}
+	for _, value := range values {
+		var encoded [4]byte
+		binary.BigEndian.PutUint32(encoded[:], value)
+		rData = append(rData, encoded[:]...)
+	}
+
+	return rData
+}
 
 func testZone() Zone {
 	return Zone{
@@ -11,6 +35,23 @@ func testZone() Zone {
 					{
 						TTL:   60,
 						RData: []byte{1, 2, 3, 4},
+					},
+				},
+				TypeAAAA: {
+					{
+						TTL: 120,
+						RData: []byte{
+							0x20, 0x01, 0x0d, 0xb8,
+							0x00, 0x00, 0x00, 0x00,
+							0x00, 0x00, 0x00, 0x00,
+							0x00, 0x00, 0x00, 0x01,
+						},
+					},
+				},
+				TypeSOA: {
+					{
+						TTL:   300,
+						RData: testSOARData(),
 					},
 				},
 			},

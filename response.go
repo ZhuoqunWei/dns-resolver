@@ -13,26 +13,17 @@ const (
 
 func buildResponse(msg Message, zone Zone) ([]byte, error) {
 	question := msg.Question
-	name := canonicalName(question.Name)
-	recordsByType, nameHasRecords := zone.Records[name]
-	aRecords := recordsByType[TypeA]
-	inZone := zone.contains(name)
-	nameExists := zone.nameExists(name)
-
-	hasAnswer := question.QType == TypeA &&
-		question.QClass == ClassIN &&
-		len(aRecords) > 0 &&
-		nameHasRecords &&
-		inZone
-
-	var record Record
-	if hasAnswer {
-		record = aRecords[0]
-	}
+	plan := planResponse(question, zone)
 
 	encodedName, err := encodeQName(question.Name)
 	if err != nil {
 		return nil, fmt.Errorf("encode qname: %w", err)
+	}
+	if len(plan.Answers) > 0xffff {
+		return nil, fmt.Errorf("too many answer records: %d", len(plan.Answers))
+	}
+	if len(plan.Authorities) > 0xffff {
+		return nil, fmt.Errorf("too many authority records: %d", len(plan.Authorities))
 	}
 
 	response := make([]byte, 0)
@@ -46,18 +37,15 @@ func buildResponse(msg Message, zone Zone) ([]byte, error) {
 	// QR = 1 response
 	// RD = copied from query
 	// RA = 0 because we do not support recursion yet
-	// RCODE = NXDOMAIN for a missing in-zone name
-	// RCODE = REFUSED for a name outside the configured zone
 	var flags uint16 = 0x8000 // QR = 1
 
 	if msg.Flags.RD {
 		flags |= 0x0100 // copy RD
 	}
-	if !inZone {
-		flags |= rCodeRefused
-	} else if !nameExists {
-		flags |= rCodeNXDomain
+	if plan.Authoritative {
+		flags |= 0x0400 // AA = 1
 	}
+	flags |= plan.RCode
 
 	flagsBytes := make([]byte, 2)
 	binary.BigEndian.PutUint16(flagsBytes, flags)
@@ -66,16 +54,10 @@ func buildResponse(msg Message, zone Zone) ([]byte, error) {
 	// QDCOUNT = 1
 	response = append(response, 0x00, 0x01)
 
-	if hasAnswer {
-		// ANCOUNT = 1
-		response = append(response, 0x00, 0x01)
-	} else {
-		// ANCOUNT = 0
-		response = append(response, 0x00, 0x00)
-	}
-
-	// NSCOUNT = 0
-	response = append(response, 0x00, 0x00)
+	counts := make([]byte, 4)
+	binary.BigEndian.PutUint16(counts[0:2], uint16(len(plan.Answers)))
+	binary.BigEndian.PutUint16(counts[2:4], uint16(len(plan.Authorities)))
+	response = append(response, counts...)
 
 	// ARCOUNT = 0
 	response = append(response, 0x00, 0x00)
@@ -87,33 +69,45 @@ func buildResponse(msg Message, zone Zone) ([]byte, error) {
 	binary.BigEndian.PutUint16(questionFields[2:4], question.QClass)
 	response = append(response, questionFields...)
 
-	if !hasAnswer {
-		return response, nil
+	for _, answer := range plan.Answers {
+		response, err = appendResourceRecord(response, answer)
+		if err != nil {
+			return nil, fmt.Errorf("encode answer record: %w", err)
+		}
 	}
 
-	// Answer section
+	for _, authority := range plan.Authorities {
+		response, err = appendResourceRecord(response, authority)
+		if err != nil {
+			return nil, fmt.Errorf("encode authority record: %w", err)
+		}
+	}
 
-	// NAME: pointer to QNAME at byte offset 12
-	response = append(response, 0xc0, 0x0c)
+	return response, nil
+}
 
-	// TYPE = A
-	response = append(response, 0x00, 0x01)
+func appendResourceRecord(response []byte, record responseRecord) ([]byte, error) {
+	if len(record.Record.RData) > 0xffff {
+		return nil, fmt.Errorf("RDATA exceeds 65535 bytes")
+	}
 
-	// CLASS = IN
-	response = append(response, 0x00, 0x01)
+	if record.UseQuestionPointer {
+		response = append(response, 0xc0, 0x0c)
+	} else {
+		encodedName, err := encodeQName(record.Name)
+		if err != nil {
+			return nil, fmt.Errorf("encode owner name: %w", err)
+		}
+		response = append(response, encodedName...)
+	}
 
-	// TTL
-	ttl := make([]byte, 4)
-	binary.BigEndian.PutUint32(ttl, record.TTL)
-	response = append(response, ttl...)
-
-	// RDLENGTH
-	rDataLength := make([]byte, 2)
-	binary.BigEndian.PutUint16(rDataLength, uint16(len(record.RData)))
-	response = append(response, rDataLength...)
-
-	// RDATA = configured IPv4 address
-	response = append(response, record.RData...)
+	fields := make([]byte, 10)
+	binary.BigEndian.PutUint16(fields[0:2], record.Type)
+	binary.BigEndian.PutUint16(fields[2:4], ClassIN)
+	binary.BigEndian.PutUint32(fields[4:8], record.Record.TTL)
+	binary.BigEndian.PutUint16(fields[8:10], uint16(len(record.Record.RData)))
+	response = append(response, fields...)
+	response = append(response, record.Record.RData...)
 
 	return response, nil
 }
