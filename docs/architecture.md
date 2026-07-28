@@ -66,7 +66,7 @@ The server receives the query, parses `example.com`, builds an answer for `1.2.3
 
 ### 1. Load configured records
 
-`main.go` calls `loadZone` with `records.json`. The loader decodes the JSON, canonicalizes the origin, names, and types, validates A and AAAA address families, encodes the zone SOA, rejects duplicate name-and-type pairs and out-of-zone records, and creates the runtime `Zone`.
+`main.go` calls `loadZone` with `records.json`. The loader decodes the JSON, canonicalizes the origin, names, and types, validates A and AAAA address families, and encodes the zone SOA. Repeated owner-and-type entries become one RRset. The loader rejects duplicate RDATA, inconsistent TTLs within an RRset, and out-of-zone records before creating the runtime `Zone`.
 
 If the file cannot be read or validated, the program exits before opening the UDP socket.
 
@@ -100,7 +100,7 @@ After a query is successfully parsed, `handlePacket` calls `buildResponse` in `r
 
 `buildResponse` receives the parsed `Message` and `Zone` from `main.go`. Each `Record` contains a TTL and wire-ready RDATA. It asks `planResponse` to classify the query before writing any bytes:
 
-- A matching A, AAAA, or SOA record is placed in the answer section.
+- Every record in a matching A, AAAA, or SOA RRset is placed in the answer section.
 - A missing in-zone owner produces `NXDOMAIN` and places the zone SOA in the authority section.
 - A known owner with no matching type produces `NOERROR`/NODATA and places the zone SOA in the authority section.
 - An out-of-zone name produces `REFUSED` without an authority record.
@@ -144,14 +144,14 @@ For negative caching, the SOA record in the authority section uses the smaller o
 | File | Responsibility |
 | --- | --- |
 | `main.go` | Loads configured records, opens the UDP socket, and starts the server loop. |
-| `config.go` | Reads and validates A/AAAA/SOA JSON configuration, then converts values into wire-ready runtime records. |
-| `config_test.go` | Tests SOA encoding, origin, record type, address-family, canonicalization, malformed input, duplicate, and zone-boundary validation. |
+| `config.go` | Reads and validates A/AAAA/SOA JSON configuration, forms RRsets, and converts values into wire-ready runtime records. |
+| `config_test.go` | Tests SOA encoding, RRset rules, record types, address families, canonicalization, malformed input, and zone boundaries. |
 | `records.json` | Defines the zone origin, SOA metadata, and address records loaded when the server starts. |
 | `record.go` | Defines the generic runtime record containing TTL and wire-ready RDATA. |
 | `zone.go` | Groups the origin and records by owner name and DNS type, and classifies names as in-zone or out-of-zone. |
 | `zone_test.go` | Tests zone-boundary matching and owner-name existence. |
 | `server.go` | Receives and sends UDP packets, coordinates parsing and response building, and logs query results. |
-| `server_test.go` | Sends A, AAAA, SOA, NODATA, NXDOMAIN, and REFUSED queries over a loopback UDP socket. |
+| `server_test.go` | Sends single-record, multi-record, SOA, NODATA, NXDOMAIN, and REFUSED queries over a loopback UDP socket. |
 | `dns.go` | Parses DNS headers, flags, QNAMEs, questions, and one complete DNS message. |
 | `response_plan.go` | Applies zone policy and selects answer and authority records for a query. |
 | `response.go` | Encodes response headers, questions, and general DNS resource records. |
@@ -167,6 +167,7 @@ For negative caching, the SOA record in the authority section uses the smaller o
 | `example.com AAAA / IN` | Returns `2001:db8::1` with TTL 120. |
 | `example.com SOA / IN` | Returns the configured zone SOA. |
 | `test.example.com A / IN` | Returns `5.6.7.8` with TTL 300. |
+| `pool.example.com A / IN` | Returns both `192.0.2.10` and `192.0.2.11` with TTL 90. |
 | Missing name inside `example.com` | Returns authoritative `NXDOMAIN` with the SOA in the authority section. |
 | Name outside `example.com` | Returns `REFUSED` with no answers. |
 | Unsupported type on a configured name | Returns authoritative `NOERROR`/NODATA with the SOA in the authority section. |
@@ -184,6 +185,7 @@ The response plan is selected by zone membership, owner-name existence, QTYPE, a
 - The response builder depends on parsed data rather than the original query bytes.
 - The zone is passed explicitly to the response builder instead of being read as global state.
 - Runtime records use `Records[name][type][]Record`, allowing multiple types and multiple records per owner without changing the zone shape.
+- Records sharing an owner, type, and class form an RRset; members must have distinct RDATA and one common TTL.
 - Configuration parsing converts human-readable values into validated, wire-ready RDATA once during startup.
 - A values become four-byte RDATA under `TypeA`; AAAA values become sixteen-byte RDATA under `TypeAAAA`.
 - SOA metadata becomes wire-ready RDATA under `TypeSOA` at the zone origin.
@@ -214,4 +216,4 @@ Run the unit tests:
 go test -count=1 ./...
 ```
 
-The test suite starts the server on an operating-system-assigned loopback UDP port and verifies A, AAAA, SOA, NODATA, NXDOMAIN, and REFUSED responses through a real socket. You can also run the server and use the `dig` commands in `README.md` for a manual demo.
+The test suite starts the server on an operating-system-assigned loopback UDP port and verifies single-record and multi-record answers, SOA, NODATA, NXDOMAIN, and REFUSED responses through a real socket. You can also run the server and use the `dig` commands in `README.md` for a manual demo.

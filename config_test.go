@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -42,7 +43,9 @@ func TestLoadZone(t *testing.T) {
 		"records": [
 			{"name": "Example.COM.", "type": "A", "value": "1.2.3.4", "ttl": 60},
 			{"name": "Example.COM.", "type": "aaaa", "value": "2001:db8::1", "ttl": 120},
-			{"name": "test.example.com", "type": "A", "value": "5.6.7.8", "ttl": 300}
+			{"name": "test.example.com", "type": "A", "value": "5.6.7.8", "ttl": 300},
+			{"name": "pool.example.com", "type": "A", "value": "192.0.2.10", "ttl": 90},
+			{"name": "POOL.EXAMPLE.COM.", "type": "a", "value": "192.0.2.11", "ttl": 90}
 		]
 	}`, validSOAConfig))
 
@@ -131,12 +134,33 @@ func TestLoadZone(t *testing.T) {
 	if !bytes.Equal(testRecord.RData, []byte{5, 6, 7, 8}) {
 		t.Fatalf("test.example.com RDATA = %v, want [5 6 7 8]", testRecord.RData)
 	}
+
+	poolRecords, exists := zone.Records["pool.example.com"]
+	if !exists {
+		t.Fatal(`records["pool.example.com"] does not exist`)
+	}
+	if len(poolRecords[TypeA]) != 2 {
+		t.Fatalf("pool.example.com A record count = %d, want 2", len(poolRecords[TypeA]))
+	}
+	wantPoolRData := [][]byte{
+		{192, 0, 2, 10},
+		{192, 0, 2, 11},
+	}
+	for i, record := range poolRecords[TypeA] {
+		if record.TTL != 90 {
+			t.Fatalf("pool.example.com record %d TTL = %d, want 90", i, record.TTL)
+		}
+		if !bytes.Equal(record.RData, wantPoolRData[i]) {
+			t.Fatalf("pool.example.com record %d RDATA = %v, want %v", i, record.RData, wantPoolRData[i])
+		}
+	}
 }
 
 func TestLoadZoneRejectsInvalidConfiguration(t *testing.T) {
 	tests := []struct {
-		name    string
-		content string
+		name      string
+		content   string
+		wantError string
 	}{
 		{
 			name:    "malformed JSON",
@@ -220,7 +244,16 @@ func TestLoadZoneRejectsInvalidConfiguration(t *testing.T) {
 			content: validRecordsConfig(`[{"name": "example.com", "type": "AAAA", "value": "1.2.3.4", "ttl": 60}]`),
 		},
 		{
-			name: "duplicate canonical name and type",
+			name:      "duplicate canonical name type and value",
+			wantError: "duplicate A value",
+			content: validRecordsConfig(`[
+					{"name": "example.com", "type": "A", "value": "1.2.3.4", "ttl": 60},
+					{"name": "EXAMPLE.COM.", "type": "a", "value": "1.2.3.4", "ttl": 60}
+				]`),
+		},
+		{
+			name:      "inconsistent TTL in RRset",
+			wantError: "must use the same TTL",
 			content: validRecordsConfig(`[
 					{"name": "example.com", "type": "A", "value": "1.2.3.4", "ttl": 60},
 					{"name": "EXAMPLE.COM.", "type": "a", "value": "5.6.7.8", "ttl": 300}
@@ -232,8 +265,12 @@ func TestLoadZoneRejectsInvalidConfiguration(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			path := writeRecordsConfig(t, tt.content)
 
-			if _, err := loadZone(path); err == nil {
+			_, err := loadZone(path)
+			if err == nil {
 				t.Fatal("loadZone returned nil error")
+			}
+			if tt.wantError != "" && !strings.Contains(err.Error(), tt.wantError) {
+				t.Fatalf("loadZone error = %q, want it to contain %q", err, tt.wantError)
 			}
 		})
 	}

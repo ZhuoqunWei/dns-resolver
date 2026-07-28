@@ -63,6 +63,18 @@ func testZone() Zone {
 					},
 				},
 			},
+			"pool.example.com": {
+				TypeA: {
+					{
+						TTL:   90,
+						RData: []byte{192, 0, 2, 10},
+					},
+					{
+						TTL:   90,
+						RData: []byte{192, 0, 2, 11},
+					},
+				},
+			},
 		},
 	}
 }
@@ -99,6 +111,7 @@ func TestZoneNameExists(t *testing.T) {
 	}{
 		{name: "example.com", want: true},
 		{name: "test.example.com", want: true},
+		{name: "pool.example.com", want: true},
 		{name: "missing.example.com", want: false},
 	}
 

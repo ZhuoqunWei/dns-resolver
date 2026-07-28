@@ -44,7 +44,7 @@ func TestServeUDPRespondsToQueries(t *testing.T) {
 		wantRCode   uint16
 		wantAA      bool
 		wantType    uint16
-		wantRData   []byte
+		wantRData   [][]byte
 	}{
 		{
 			name:        "configured A record",
@@ -52,7 +52,7 @@ func TestServeUDPRespondsToQueries(t *testing.T) {
 			wantANCount: 1,
 			wantAA:      true,
 			wantType:    TypeA,
-			wantRData:   []byte{1, 2, 3, 4},
+			wantRData:   [][]byte{{1, 2, 3, 4}},
 		},
 		{
 			name:        "configured AAAA record",
@@ -60,11 +60,13 @@ func TestServeUDPRespondsToQueries(t *testing.T) {
 			wantANCount: 1,
 			wantAA:      true,
 			wantType:    TypeAAAA,
-			wantRData: []byte{
-				0x20, 0x01, 0x0d, 0xb8,
-				0x00, 0x00, 0x00, 0x00,
-				0x00, 0x00, 0x00, 0x00,
-				0x00, 0x00, 0x00, 0x01,
+			wantRData: [][]byte{
+				{
+					0x20, 0x01, 0x0d, 0xb8,
+					0x00, 0x00, 0x00, 0x00,
+					0x00, 0x00, 0x00, 0x00,
+					0x00, 0x00, 0x00, 0x01,
+				},
 			},
 		},
 		{
@@ -73,7 +75,18 @@ func TestServeUDPRespondsToQueries(t *testing.T) {
 			wantANCount: 1,
 			wantAA:      true,
 			wantType:    TypeSOA,
-			wantRData:   testSOARData(),
+			wantRData:   [][]byte{testSOARData()},
+		},
+		{
+			name:        "configured A RRset",
+			query:       samplePoolExampleAQuery(),
+			wantANCount: 2,
+			wantAA:      true,
+			wantType:    TypeA,
+			wantRData: [][]byte{
+				{192, 0, 2, 10},
+				{192, 0, 2, 11},
+			},
 		},
 		{
 			name:        "unsupported type at existing name",
@@ -139,12 +152,16 @@ func TestServeUDPRespondsToQueries(t *testing.T) {
 			}
 
 			if tt.wantRData != nil {
-				answer := parseTestResourceRecord(t, response, len(tt.query))
-				if answer.Type != tt.wantType {
-					t.Fatalf("answer TYPE = %d, want %d", answer.Type, tt.wantType)
-				}
-				if !bytes.Equal(answer.RData, tt.wantRData) {
-					t.Fatalf("RDATA = %v, want %v", answer.RData, tt.wantRData)
+				offset := len(tt.query)
+				for i, wantRData := range tt.wantRData {
+					answer := parseTestResourceRecord(t, response, offset)
+					if answer.Type != tt.wantType {
+						t.Fatalf("answer %d TYPE = %d, want %d", i, answer.Type, tt.wantType)
+					}
+					if !bytes.Equal(answer.RData, wantRData) {
+						t.Fatalf("answer %d RDATA = %v, want %v", i, answer.RData, wantRData)
+					}
+					offset = answer.Next
 				}
 			}
 		})

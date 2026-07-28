@@ -100,6 +100,28 @@ func sampleTestExampleAQuery() []byte {
 	}
 }
 
+func samplePoolExampleAQuery() []byte {
+	return []byte{
+		// Header
+		0x12, 0x34, // ID
+		0x01, 0x00, // Flags: RD = true
+		0x00, 0x01, // QDCOUNT = 1
+		0x00, 0x00, // ANCOUNT = 0
+		0x00, 0x00, // NSCOUNT = 0
+		0x00, 0x00, // ARCOUNT = 0
+
+		// QNAME: pool.example.com
+		0x04, 'p', 'o', 'o', 'l',
+		0x07, 'e', 'x', 'a', 'm', 'p', 'l', 'e',
+		0x03, 'c', 'o', 'm',
+		0x00,
+
+		// QTYPE: A, QCLASS: IN
+		0x00, 0x01,
+		0x00, 0x01,
+	}
+}
+
 func buildTestResponse(t *testing.T, query []byte) []byte {
 	t.Helper()
 
@@ -424,6 +446,43 @@ func TestBuildResponseReturnsConfiguredTestExampleRecord(t *testing.T) {
 
 	if !bytes.Equal(answer, want) {
 		t.Fatalf("answer = %v, want %v", answer, want)
+	}
+}
+
+func TestBuildResponseReturnsAllRecordsInRRset(t *testing.T) {
+	query := samplePoolExampleAQuery()
+	response := buildTestResponse(t, query)
+
+	if anCount := binary.BigEndian.Uint16(response[6:8]); anCount != 2 {
+		t.Fatalf("ANCOUNT = %d, want 2", anCount)
+	}
+
+	wantRData := [][]byte{
+		{192, 0, 2, 10},
+		{192, 0, 2, 11},
+	}
+	offset := len(query)
+	for i, want := range wantRData {
+		answer := parseTestResourceRecord(t, response, offset)
+		if answer.Name != "pool.example.com" {
+			t.Fatalf("answer %d name = %q, want %q", i, answer.Name, "pool.example.com")
+		}
+		if answer.Type != TypeA {
+			t.Fatalf("answer %d TYPE = %d, want %d", i, answer.Type, TypeA)
+		}
+		if answer.Class != ClassIN {
+			t.Fatalf("answer %d CLASS = %d, want %d", i, answer.Class, ClassIN)
+		}
+		if answer.TTL != 90 {
+			t.Fatalf("answer %d TTL = %d, want 90", i, answer.TTL)
+		}
+		if !bytes.Equal(answer.RData, want) {
+			t.Fatalf("answer %d RDATA = %v, want %v", i, answer.RData, want)
+		}
+		offset = answer.Next
+	}
+	if offset != len(response) {
+		t.Fatalf("parsed response through offset %d, response length is %d", offset, len(response))
 	}
 }
 

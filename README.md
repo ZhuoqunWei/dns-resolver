@@ -270,12 +270,26 @@ The server loads `records.json` once during startup. The file defines the zone o
       "type": "AAAA",
       "value": "2001:db8::1",
       "ttl": 120
+    },
+    {
+      "name": "pool.example.com",
+      "type": "A",
+      "value": "192.0.2.10",
+      "ttl": 90
+    },
+    {
+      "name": "pool.example.com",
+      "type": "A",
+      "value": "192.0.2.11",
+      "ttl": 90
     }
   ]
 }
 ```
 
-The loader converts A, AAAA, and SOA values into wire-ready RDATA. The origin defines the zone served by this process. Names and type strings are normalized for case-insensitive lookup. Invalid names, unsupported types, address-family mismatches, duplicate normalized name-and-type pairs, and records outside the configured zone prevent the server from starting.
+The loader converts A, AAAA, and SOA values into wire-ready RDATA. Repeated owner-and-type entries form an RRset, such as the two A records for `pool.example.com`. Every member of an RRset must have distinct RDATA and the same TTL.
+
+The origin defines the zone served by this process. Names and type strings are normalized for case-insensitive lookup. Invalid names, unsupported types, address-family mismatches, duplicate values, mixed TTLs within an RRset, and records outside the configured zone prevent the server from starting.
 
 Start the server:
 ```
@@ -322,6 +336,23 @@ example.com.  60  IN  A  1.2.3.4
 ```
 This does not mean the server performed a real DNS lookup. It means the server found `example.com` in its configured records and returned the matching IPv4 address.
 
+## Demo: Multiple A Records
+
+Run:
+
+```bash
+dig +noedns @127.0.0.1 -p 8053 pool.example.com A
+```
+
+Expected answer section:
+
+```text
+pool.example.com.       90      IN      A       192.0.2.10
+pool.example.com.       90      IN      A       192.0.2.11
+```
+
+Both records belong to one A RRset, so the response has `ANSWER: 2`. The server returns every configured member of the matching RRset.
+
 ## Demo: AAAA Query
 
 Run:
@@ -361,6 +392,7 @@ example.com A      -> NOERROR, ANSWER: 1, 1.2.3.4
 example.com AAAA   -> NOERROR, ANSWER: 1, 2001:db8::1
 example.com SOA    -> NOERROR, ANSWER: 1
 test.example.com A -> NOERROR, ANSWER: 1, 5.6.7.8
+pool.example.com A -> NOERROR, ANSWER: 2, 192.0.2.10 and 192.0.2.11
 missing.example.com A -> NXDOMAIN, ANSWER: 0, AUTHORITY: SOA
 example.com TXT    -> NOERROR, ANSWER: 0, AUTHORITY: SOA
 other.com A        -> REFUSED, ANSWER: 0, AUTHORITY: 0
@@ -394,13 +426,14 @@ Additional behavior coverage includes:
 - Packet handler rejects malformed queries
 - Response builder does not set `RA`
 - Response builder returns configured A, AAAA, and SOA answers for `ClassIN`
+- Response builder returns every record in a matching RRset
 - Response builder sets AA for in-zone answers
 - Response builder returns NXDOMAIN plus an SOA authority record for missing in-zone names
 - Response builder returns NOERROR/NODATA plus an SOA authority record for missing types
 - Response builder returns REFUSED for out-of-zone names
 - General resource-record encoding rejects oversized RDATA
-- Loopback UDP integration covers A, AAAA, SOA, NODATA, NXDOMAIN, and REFUSED
-- JSON loader accepts valid A, AAAA, and SOA data and rejects malformed configuration
+- Loopback UDP integration covers single and multi-record answers, SOA, NODATA, NXDOMAIN, and REFUSED
+- JSON loader accepts valid RRsets and rejects duplicate data or inconsistent RRset TTLs
 
 ## Current Limitations
 

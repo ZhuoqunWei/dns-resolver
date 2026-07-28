@@ -94,21 +94,32 @@ func loadZone(path string) (Zone, error) {
 		if err != nil {
 			return Zone{}, fmt.Errorf("record %d: %w", recordNumber, err)
 		}
-		if len(recordsByType[recordType]) > 0 {
+		recordTypeName := strings.ToUpper(strings.TrimSpace(configuredRecord.Type))
+		rrset := recordsByType[recordType]
+		for _, existing := range rrset {
+			if bytes.Equal(existing.RData, rData) {
+				return Zone{}, fmt.Errorf(
+					"record %d: duplicate %s value %q for name %q",
+					recordNumber,
+					recordTypeName,
+					configuredRecord.Value,
+					name,
+				)
+			}
+		}
+		if len(rrset) > 0 && rrset[0].TTL != configuredRecord.TTL {
 			return Zone{}, fmt.Errorf(
-				"record %d: duplicate %s record for name %q",
+				"record %d: %s records for name %q must use the same TTL",
 				recordNumber,
-				strings.ToUpper(strings.TrimSpace(configuredRecord.Type)),
+				recordTypeName,
 				name,
 			)
 		}
 
-		recordsByType[recordType] = []Record{
-			{
-				TTL:   configuredRecord.TTL,
-				RData: rData,
-			},
-		}
+		recordsByType[recordType] = append(rrset, Record{
+			TTL:   configuredRecord.TTL,
+			RData: rData,
+		})
 	}
 
 	return zone, nil
