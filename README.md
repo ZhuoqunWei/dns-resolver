@@ -407,6 +407,19 @@ The answer section uses DNS name compression:
 
 This points back to byte offset 12, where the original QNAME starts in the question section.
 
+## UDP Response Truncation
+
+Without EDNS, DNS-over-UDP responses are limited to 512 bytes. The response builder encodes resource records one at a time and appends only complete records that fit within that limit.
+
+When required answer or authority data does not fit, the server:
+
+- Stops before the next complete resource record.
+- Sets `TC = 1`.
+- Sets `ANCOUNT` and `NSCOUNT` to the records actually included.
+- Sends a response no larger than 512 bytes.
+
+A truncated response may contain part of an RRset, but clients should retry the query using a transport that permits a larger response. TCP fallback is not implemented yet, so this server currently provides only the correctly marked UDP response.
+
 ## Tested Malformed Cases
 
 The test suite checks that the parser and response builder handle invalid input safely.
@@ -427,12 +440,15 @@ Additional behavior coverage includes:
 - Response builder does not set `RA`
 - Response builder returns configured A, AAAA, and SOA answers for `ClassIN`
 - Response builder returns every record in a matching RRset
+- Response builder limits classic UDP responses to 512 bytes
+- Oversized responses contain only complete resource records and set `TC`
+- Truncated response counts match the records actually included
 - Response builder sets AA for in-zone answers
 - Response builder returns NXDOMAIN plus an SOA authority record for missing in-zone names
 - Response builder returns NOERROR/NODATA plus an SOA authority record for missing types
 - Response builder returns REFUSED for out-of-zone names
 - General resource-record encoding rejects oversized RDATA
-- Loopback UDP integration covers single and multi-record answers, SOA, NODATA, NXDOMAIN, and REFUSED
+- Loopback UDP integration covers normal and truncated RRsets, SOA, NODATA, NXDOMAIN, and REFUSED
 - JSON loader accepts valid RRsets and rejects duplicate data or inconsistent RRset TTLs
 
 ## Current Limitations
@@ -444,6 +460,8 @@ This project intentionally does not support everything yet.
 - Supports one question only
 - Does not support compressed QNAMEs in incoming queries yet
 - Does not support EDNS yet; use `+noedns` with `dig`
+- UDP responses therefore use the classic 512-byte limit
+- Does not provide TCP retry service for truncated responses yet
 - Does not perform recursive resolution yet
 - Does not forward queries to upstream DNS servers yet
 - Does not implement caching yet

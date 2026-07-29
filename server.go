@@ -23,7 +23,7 @@ func handlePacket(packet []byte, zone Zone) (Message, []byte, error) {
 }
 
 func serveUDP(conn *net.UDPConn, zone Zone, output io.Writer) error {
-	buf := make([]byte, 512)
+	buf := make([]byte, maxDNSUDPMessageSize)
 
 	for {
 		n, remoteAddr, err := conn.ReadFromUDP(buf)

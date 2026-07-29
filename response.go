@@ -7,11 +7,17 @@ import (
 )
 
 const (
+	maxDNSUDPMessageSize = 512
+
 	rCodeNXDomain uint16 = 3
 	rCodeRefused  uint16 = 5
 )
 
 func buildResponse(msg Message, zone Zone) ([]byte, error) {
+	return buildResponseWithLimit(msg, zone, maxDNSUDPMessageSize)
+}
+
+func buildResponseWithLimit(msg Message, zone Zone, sizeLimit int) ([]byte, error) {
 	question := msg.Question
 	plan := planResponse(question, zone)
 
@@ -19,11 +25,8 @@ func buildResponse(msg Message, zone Zone) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("encode qname: %w", err)
 	}
-	if len(plan.Answers) > 0xffff {
-		return nil, fmt.Errorf("too many answer records: %d", len(plan.Answers))
-	}
-	if len(plan.Authorities) > 0xffff {
-		return nil, fmt.Errorf("too many authority records: %d", len(plan.Authorities))
+	if sizeLimit <= 0 {
+		return nil, fmt.Errorf("response size limit must be positive")
 	}
 
 	response := make([]byte, 0)
@@ -54,10 +57,8 @@ func buildResponse(msg Message, zone Zone) ([]byte, error) {
 	// QDCOUNT = 1
 	response = append(response, 0x00, 0x01)
 
-	counts := make([]byte, 4)
-	binary.BigEndian.PutUint16(counts[0:2], uint16(len(plan.Answers)))
-	binary.BigEndian.PutUint16(counts[2:4], uint16(len(plan.Authorities)))
-	response = append(response, counts...)
+	// ANCOUNT and NSCOUNT are patched after complete records are appended.
+	response = append(response, 0x00, 0x00, 0x00, 0x00)
 
 	// ARCOUNT = 0
 	response = append(response, 0x00, 0x00)
@@ -69,21 +70,75 @@ func buildResponse(msg Message, zone Zone) ([]byte, error) {
 	binary.BigEndian.PutUint16(questionFields[2:4], question.QClass)
 	response = append(response, questionFields...)
 
-	for _, answer := range plan.Answers {
-		response, err = appendResourceRecord(response, answer)
-		if err != nil {
-			return nil, fmt.Errorf("encode answer record: %w", err)
-		}
+	if len(response) > sizeLimit {
+		return nil, fmt.Errorf(
+			"response header and question require %d bytes, exceeding size limit %d",
+			len(response),
+			sizeLimit,
+		)
 	}
 
-	for _, authority := range plan.Authorities {
-		response, err = appendResourceRecord(response, authority)
-		if err != nil {
-			return nil, fmt.Errorf("encode authority record: %w", err)
-		}
+	var answerCount uint16
+	var authorityCount uint16
+	var truncated bool
+
+	response, answerCount, truncated, err = appendRecordsWithinLimit(
+		response,
+		plan.Answers,
+		sizeLimit,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("encode answer records: %w", err)
 	}
+
+	if !truncated {
+		var authorityTruncated bool
+		response, authorityCount, authorityTruncated, err = appendRecordsWithinLimit(
+			response,
+			plan.Authorities,
+			sizeLimit,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("encode authority records: %w", err)
+		}
+		truncated = authorityTruncated
+	}
+
+	if truncated {
+		flags |= 0x0200 // TC = 1
+	}
+	binary.BigEndian.PutUint16(response[2:4], flags)
+	binary.BigEndian.PutUint16(response[6:8], answerCount)
+	binary.BigEndian.PutUint16(response[8:10], authorityCount)
 
 	return response, nil
+}
+
+func appendRecordsWithinLimit(
+	response []byte,
+	records []responseRecord,
+	sizeLimit int,
+) ([]byte, uint16, bool, error) {
+	var count uint16
+
+	for _, record := range records {
+		if count == 0xffff {
+			return response, count, true, nil
+		}
+
+		encoded, err := appendResourceRecord(nil, record)
+		if err != nil {
+			return nil, 0, false, err
+		}
+		if len(response)+len(encoded) > sizeLimit {
+			return response, count, true, nil
+		}
+
+		response = append(response, encoded...)
+		count++
+	}
+
+	return response, count, false, nil
 }
 
 func appendResourceRecord(response []byte, record responseRecord) ([]byte, error) {

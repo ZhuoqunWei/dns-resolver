@@ -180,3 +180,77 @@ func TestServeUDPRespondsToQueries(t *testing.T) {
 		t.Fatal("serveUDP did not stop after its connection was closed")
 	}
 }
+
+func TestServeUDPTruncatesOversizedResponse(t *testing.T) {
+	serverConn, err := net.ListenUDP("udp", &net.UDPAddr{
+		IP:   net.ParseIP("127.0.0.1"),
+		Port: 0,
+	})
+	if err != nil {
+		t.Fatalf("listen for UDP: %v", err)
+	}
+	defer serverConn.Close()
+
+	serverDone := make(chan error, 1)
+	go func() {
+		serverDone <- serveUDP(serverConn, testZoneWithLargeARRset(40), io.Discard)
+	}()
+
+	clientConn, err := net.DialUDP("udp", nil, serverConn.LocalAddr().(*net.UDPAddr))
+	if err != nil {
+		t.Fatalf("dial UDP server: %v", err)
+	}
+	defer clientConn.Close()
+
+	if err := clientConn.SetDeadline(time.Now().Add(time.Second)); err != nil {
+		t.Fatalf("set UDP deadline: %v", err)
+	}
+
+	query := samplePoolExampleAQuery()
+	if _, err := clientConn.Write(query); err != nil {
+		t.Fatalf("write UDP query: %v", err)
+	}
+
+	buf := make([]byte, 2048)
+	n, err := clientConn.Read(buf)
+	if err != nil {
+		t.Fatalf("read UDP response: %v", err)
+	}
+	response := buf[:n]
+
+	if len(response) > maxDNSUDPMessageSize {
+		t.Fatalf("response length = %d, want at most %d", len(response), maxDNSUDPMessageSize)
+	}
+	flags := binary.BigEndian.Uint16(response[2:4])
+	if flags&0x0200 == 0 {
+		t.Fatalf("TC flag is not set for truncated UDP response; flags=%016b", flags)
+	}
+
+	const wantAnswerCount uint16 = 29
+	answerCount := binary.BigEndian.Uint16(response[6:8])
+	if answerCount != wantAnswerCount {
+		t.Fatalf("ANCOUNT = %d, want %d", answerCount, wantAnswerCount)
+	}
+
+	offset := len(query)
+	for i := 0; i < int(answerCount); i++ {
+		answer := parseTestResourceRecord(t, response, offset)
+		offset = answer.Next
+	}
+	if offset != len(response) {
+		t.Fatalf("parsed response through offset %d, response length is %d", offset, len(response))
+	}
+
+	if err := serverConn.Close(); err != nil {
+		t.Fatalf("close UDP server: %v", err)
+	}
+
+	select {
+	case err := <-serverDone:
+		if err != nil {
+			t.Fatalf("serveUDP returned error: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("serveUDP did not stop after its connection was closed")
+	}
+}

@@ -130,11 +130,16 @@ Positive answers use `0xc00c`, a pointer to the queried name at byte 12. A negat
 
 For negative caching, the SOA record in the authority section uses the smaller of its record TTL and SOA MINIMUM value.
 
+Because EDNS is not supported, `buildResponse` applies the classic 512-byte UDP message limit. `appendRecordsWithinLimit` encodes each candidate record separately and appends it only when the complete record fits. The builder then patches `ANCOUNT` and `NSCOUNT` with the records actually written.
+
+If required answer or authority data is omitted, the builder sets `TC = 1`. A partial RRset made of complete resource records may remain in a TC-marked response, as described by [RFC 2181, sections 5.1 and 9](https://www.rfc-editor.org/rfc/rfc2181.html). The client is expected to retry using a transport that permits a larger response.
+
 ### 5. Send the response
 
-`serveUDP` sends the bytes returned by `handlePacket` to the original sender address with `WriteToUDP`. `dig` receives the response and displays either:
+`serveUDP` sends the bytes returned by `handlePacket` to the original sender address with `WriteToUDP`. UDP responses are at most 512 bytes. `dig` receives the response and displays either:
 
 - A configured A, AAAA, or SOA answer.
+- A partial answer with `TC = 1` when required data exceeds the UDP limit.
 - `NXDOMAIN` with an SOA authority record for a missing name inside the zone.
 - `NOERROR` with an SOA authority record for a missing type on an existing name.
 - `REFUSED` for a name outside the zone.
@@ -150,11 +155,11 @@ For negative caching, the SOA record in the authority section uses the smaller o
 | `record.go` | Defines the generic runtime record containing TTL and wire-ready RDATA. |
 | `zone.go` | Groups the origin and records by owner name and DNS type, and classifies names as in-zone or out-of-zone. |
 | `zone_test.go` | Tests zone-boundary matching and owner-name existence. |
-| `server.go` | Receives and sends UDP packets, coordinates parsing and response building, and logs query results. |
-| `server_test.go` | Sends single-record, multi-record, SOA, NODATA, NXDOMAIN, and REFUSED queries over a loopback UDP socket. |
+| `server.go` | Receives and sends UDP packets within the classic 512-byte message limit, coordinates parsing and response building, and logs query results. |
+| `server_test.go` | Sends normal, oversized, SOA, NODATA, NXDOMAIN, and REFUSED queries over a loopback UDP socket. |
 | `dns.go` | Parses DNS headers, flags, QNAMEs, questions, and one complete DNS message. |
 | `response_plan.go` | Applies zone policy and selects answer and authority records for a query. |
-| `response.go` | Encodes response headers, questions, and general DNS resource records. |
+| `response.go` | Encodes response headers, questions, and resource records, applying whole-record UDP truncation when necessary. |
 | `dns_test.go` | Tests parser behavior and malformed DNS query handling. |
 | `response_test.go` | Tests response flags, answer counts, answer bytes, and unsupported query behavior. |
 | `README.md` | Provides setup instructions, `dig` demos, DNS wire-format background, and limitations. |
@@ -190,6 +195,8 @@ The response plan is selected by zone membership, owner-name existence, QTYPE, a
 - A values become four-byte RDATA under `TypeA`; AAAA values become sixteen-byte RDATA under `TypeAAAA`.
 - SOA metadata becomes wire-ready RDATA under `TypeSOA` at the zone origin.
 - Response policy is separate from wire encoding so new record types do not require duplicating header or section logic.
+- Records are encoded separately before being appended, so response-size enforcement never cuts an RR in the middle.
+- Section counts are patched after encoding because truncation can make actual counts smaller than planned counts.
 - Negative SOA TTLs follow the DNS negative-caching rule: `min(SOA TTL, SOA MINIMUM)`.
 - Zone membership requires either the exact origin or a label-delimited subdomain, so `badexample.com` is not inside `example.com`.
 - Configuration is validated and converted into runtime records once during startup rather than parsed for each query.
@@ -202,7 +209,8 @@ The response plan is selected by zone membership, owner-name existence, QTYPE, a
 - One question per message only.
 - No compressed QNAMEs in incoming queries.
 - No EDNS support; use `+noedns` with `dig` for the documented demo.
-- UDP only; no TCP DNS fallback.
+- UDP responses use the classic 512-byte limit.
+- No TCP DNS fallback for retrying TC-marked responses.
 - No recursive resolution, upstream forwarding, or caching.
 - Configuration changes require restarting the server; live reload is not supported.
 - One configured zone only.
@@ -216,4 +224,4 @@ Run the unit tests:
 go test -count=1 ./...
 ```
 
-The test suite starts the server on an operating-system-assigned loopback UDP port and verifies single-record and multi-record answers, SOA, NODATA, NXDOMAIN, and REFUSED responses through a real socket. You can also run the server and use the `dig` commands in `README.md` for a manual demo.
+The test suite starts the server on an operating-system-assigned loopback UDP port and verifies normal and truncated RRsets, SOA, NODATA, NXDOMAIN, and REFUSED responses through a real socket. The oversized-response test reads into a 2048-byte client buffer, proving the server itself caps the datagram at 512 bytes. You can also run the server and use the `dig` commands in `README.md` for a manual demo.

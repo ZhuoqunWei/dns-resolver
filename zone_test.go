@@ -79,6 +79,20 @@ func testZone() Zone {
 	}
 }
 
+func testZoneWithLargeARRset(recordCount int) Zone {
+	zone := testZone()
+	records := make([]Record, recordCount)
+	for i := range records {
+		records[i] = Record{
+			TTL:   90,
+			RData: []byte{192, 0, 2, byte(i + 1)},
+		}
+	}
+	zone.Records["pool.example.com"][TypeA] = records
+
+	return zone
+}
+
 func TestZoneContains(t *testing.T) {
 	zone := testZone()
 

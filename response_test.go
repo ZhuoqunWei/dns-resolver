@@ -293,6 +293,9 @@ func TestBuildResponseReturnsAAnswerForTypeAClassIN(t *testing.T) {
 	if flags&0x0400 == 0 {
 		t.Fatalf("AA flag is not set for in-zone answer; flags=%016b", flags)
 	}
+	if flags&0x0200 != 0 {
+		t.Fatalf("TC flag is set for a response that fits; flags=%016b", flags)
+	}
 
 	questionEnd := len(query)
 	if !bytes.Equal(response[HeaderSize:questionEnd], query[HeaderSize:]) {
@@ -483,6 +486,92 @@ func TestBuildResponseReturnsAllRecordsInRRset(t *testing.T) {
 	}
 	if offset != len(response) {
 		t.Fatalf("parsed response through offset %d, response length is %d", offset, len(response))
+	}
+}
+
+func TestBuildResponseTruncatesOversizedRRsetAtRecordBoundary(t *testing.T) {
+	query := samplePoolExampleAQuery()
+	msg, err := parseMessage(query)
+	if err != nil {
+		t.Fatalf("parseMessage returned error: %v", err)
+	}
+
+	response, err := buildResponse(msg, testZoneWithLargeARRset(40))
+	if err != nil {
+		t.Fatalf("buildResponse returned error: %v", err)
+	}
+
+	if len(response) > maxDNSUDPMessageSize {
+		t.Fatalf("response length = %d, want at most %d", len(response), maxDNSUDPMessageSize)
+	}
+
+	flags := binary.BigEndian.Uint16(response[2:4])
+	if flags&0x0200 == 0 {
+		t.Fatalf("TC flag is not set for truncated response; flags=%016b", flags)
+	}
+
+	const wantAnswerCount uint16 = 29
+	answerCount := binary.BigEndian.Uint16(response[6:8])
+	if answerCount != wantAnswerCount {
+		t.Fatalf("ANCOUNT = %d, want %d", answerCount, wantAnswerCount)
+	}
+	if authorityCount := binary.BigEndian.Uint16(response[8:10]); authorityCount != 0 {
+		t.Fatalf("NSCOUNT = %d, want 0", authorityCount)
+	}
+
+	offset := len(query)
+	for i := 0; i < int(answerCount); i++ {
+		answer := parseTestResourceRecord(t, response, offset)
+		wantRData := []byte{192, 0, 2, byte(i + 1)}
+		if !bytes.Equal(answer.RData, wantRData) {
+			t.Fatalf("answer %d RDATA = %v, want %v", i, answer.RData, wantRData)
+		}
+		offset = answer.Next
+	}
+	if offset != len(response) {
+		t.Fatalf("parsed response through offset %d, response length is %d", offset, len(response))
+	}
+}
+
+func TestBuildResponseTruncatesAuthorityAtRecordBoundary(t *testing.T) {
+	query := sampleMissingSubdomainAQuery()
+	msg, err := parseMessage(query)
+	if err != nil {
+		t.Fatalf("parseMessage returned error: %v", err)
+	}
+
+	response, err := buildResponseWithLimit(msg, testZone(), len(query)+1)
+	if err != nil {
+		t.Fatalf("buildResponseWithLimit returned error: %v", err)
+	}
+
+	flags := binary.BigEndian.Uint16(response[2:4])
+	if flags&0x0200 == 0 {
+		t.Fatalf("TC flag is not set when authority record is omitted; flags=%016b", flags)
+	}
+	if rCode := flags & 0x000f; rCode != rCodeNXDomain {
+		t.Fatalf("RCODE = %d, want %d (NXDOMAIN)", rCode, rCodeNXDomain)
+	}
+	if answerCount := binary.BigEndian.Uint16(response[6:8]); answerCount != 0 {
+		t.Fatalf("ANCOUNT = %d, want 0", answerCount)
+	}
+	if authorityCount := binary.BigEndian.Uint16(response[8:10]); authorityCount != 0 {
+		t.Fatalf("NSCOUNT = %d, want 0", authorityCount)
+	}
+	if len(response) != len(query) {
+		t.Fatalf("response length = %d, want %d", len(response), len(query))
+	}
+}
+
+func TestBuildResponseRejectsLimitSmallerThanQuestion(t *testing.T) {
+	query := sampleQueryWithTypeClass(TypeA, ClassIN)
+	msg, err := parseMessage(query)
+	if err != nil {
+		t.Fatalf("parseMessage returned error: %v", err)
+	}
+
+	if _, err := buildResponseWithLimit(msg, testZone(), len(query)-1); err == nil {
+		t.Fatal("buildResponseWithLimit returned nil error for a limit smaller than the header and question")
 	}
 }
 
