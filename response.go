@@ -8,6 +8,7 @@ import (
 
 const (
 	maxDNSUDPMessageSize = 512
+	maxDNSTCPMessageSize = 0xffff
 
 	rCodeNXDomain uint16 = 3
 	rCodeRefused  uint16 = 5

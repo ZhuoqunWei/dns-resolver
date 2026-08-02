@@ -4,7 +4,7 @@
 
 A small DNS server written in Go as part of a systems/networking learning project.
 
-The current version can parse basic DNS query messages from raw bytes, listen for UDP DNS queries on `127.0.0.1:8053`, and serve one authoritative zone. It returns configured IPv4, IPv6, and SOA records loaded from `records.json`.
+The current version can parse basic DNS query messages from raw bytes, listen for DNS queries over UDP and TCP on `127.0.0.1:8053`, and serve one authoritative zone. It returns configured IPv4, IPv6, and SOA records loaded from `records.json`.
 
 This is not a recursive resolver yet. It does not forward queries to upstream DNS servers, perform caching, or dynamically resolve real domain names.
 
@@ -19,7 +19,7 @@ The server currently supports:
 * Parsing a DNS QNAME from length-prefixed labels
 * Parsing QTYPE and QCLASS
 * Parsing one complete DNS query message with exactly one question
-* Listening for UDP DNS queries on 127.0.0.1:8053
+* Listening for DNS queries over UDP and TCP on 127.0.0.1:8053
 * Building a valid DNS response packet
 * Returning configured A, AAAA, and SOA records for ClassIN
 * Setting AA on responses for names inside the configured zone
@@ -241,7 +241,7 @@ Question.QClass = 1
 
 
 
-## Running the UDP DNS Server
+## Running the DNS Server
 
 The server loads `records.json` once during startup. The file defines the zone origin, its SOA metadata, and address records:
 
@@ -306,7 +306,7 @@ The server listens on:
 Expected startup output:
 
 ```text
-DNS UDP server listening on 127.0.0.1:8053
+DNS server listening on 127.0.0.1:8053 over UDP and TCP
 ```
 
 ## Demo: A Query
@@ -418,7 +418,17 @@ When required answer or authority data does not fit, the server:
 - Sets `ANCOUNT` and `NSCOUNT` to the records actually included.
 - Sends a response no larger than 512 bytes.
 
-A truncated response may contain part of an RRset, but clients should retry the query using a transport that permits a larger response. TCP fallback is not implemented yet, so this server currently provides only the correctly marked UDP response.
+A truncated response may contain part of an RRset. A client can retry the query over TCP to receive the complete response.
+
+The server also listens for DNS over TCP on the same address. Each TCP DNS message uses a two-byte, big-endian length prefix. A connection can carry multiple queries, and different client connections are handled concurrently.
+
+Force a TCP query with:
+
+```bash
+dig +tcp +noedns @127.0.0.1 -p 8053 pool.example.com A
+```
+
+TCP responses use the complete selected RRset when it fits within the protocol's 65,535-byte message limit. The integration tests configure a 40-record RRset and verify that UDP returns a response no larger than 512 bytes with `TC = 1`, while TCP returns all 40 records without `TC`.
 
 ## Tested Malformed Cases
 
@@ -443,12 +453,17 @@ Additional behavior coverage includes:
 - Response builder limits classic UDP responses to 512 bytes
 - Oversized responses contain only complete resource records and set `TC`
 - Truncated response counts match the records actually included
+- TCP messages use a two-byte length prefix and tolerate fragmented stream reads
+- Malformed and incomplete TCP frames are rejected
+- One TCP connection can carry multiple DNS queries
+- An idle TCP client does not block queries from another connection
+- Oversized UDP RRsets are returned completely over TCP without `TC`
 - Response builder sets AA for in-zone answers
 - Response builder returns NXDOMAIN plus an SOA authority record for missing in-zone names
 - Response builder returns NOERROR/NODATA plus an SOA authority record for missing types
 - Response builder returns REFUSED for out-of-zone names
 - General resource-record encoding rejects oversized RDATA
-- Loopback UDP integration covers normal and truncated RRsets, SOA, NODATA, NXDOMAIN, and REFUSED
+- Loopback UDP and TCP integration covers normal and truncated RRsets, SOA, NODATA, NXDOMAIN, and REFUSED
 - JSON loader accepts valid RRsets and rejects duplicate data or inconsistent RRset TTLs
 
 ## Current Limitations
@@ -461,7 +476,6 @@ This project intentionally does not support everything yet.
 - Does not support compressed QNAMEs in incoming queries yet
 - Does not support EDNS yet; use `+noedns` with `dig`
 - UDP responses therefore use the classic 512-byte limit
-- Does not provide TCP retry service for truncated responses yet
 - Does not perform recursive resolution yet
 - Does not forward queries to upstream DNS servers yet
 - Does not implement caching yet
@@ -469,7 +483,7 @@ This project intentionally does not support everything yet.
 - Serves one configured zone
 - Configurable address records are limited to A and AAAA
 
-These limitations are intentional because the current milestone is focused on understanding DNS query parsing, UDP packet handling, and minimal DNS response construction.
+These limitations are intentional because the current milestone is focused on authoritative DNS behavior, transport handling, and DNS response construction.
 
 ## Running Tests
 

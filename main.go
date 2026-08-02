@@ -8,28 +8,41 @@ import (
 )
 
 func main() {
+	const listenAddress = "127.0.0.1:8053"
+
 	zone, err := loadZone("records.json")
 	if err != nil {
 		log.Fatal("load zone: ", err)
 	}
 
-	// UDP server
-	// 1. Choose the address the UDP server will listen on
-	addr, err := net.ResolveUDPAddr("udp", "127.0.0.1:8053")
+	udpAddr, err := net.ResolveUDPAddr("udp", listenAddress)
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	// 2. Start listening on UDP
-	conn, err := net.ListenUDP("udp", addr)
+	udpConn, err := net.ListenUDP("udp", udpAddr)
 	if err != nil {
 		log.Fatal(err)
 	}
-	defer conn.Close()
+	defer udpConn.Close()
 
-	fmt.Println("DNS UDP server listening on 127.0.0.1:8053")
-
-	if err := serveUDP(conn, zone, os.Stdout); err != nil {
+	tcpListener, err := net.Listen("tcp", listenAddress)
+	if err != nil {
 		log.Fatal(err)
+	}
+	defer tcpListener.Close()
+
+	fmt.Println("DNS server listening on 127.0.0.1:8053 over UDP and TCP")
+
+	serverErrors := make(chan error, 2)
+	go func() {
+		serverErrors <- serveUDP(udpConn, zone, os.Stdout)
+	}()
+	go func() {
+		serverErrors <- serveTCP(tcpListener, zone, os.Stdout)
+	}()
+
+	if err := <-serverErrors; err != nil {
+		log.Print(err)
 	}
 }

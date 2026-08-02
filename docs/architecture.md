@@ -2,7 +2,7 @@
 
 ## Purpose
 
-This project is a small DNS server written in Go to learn DNS wire-format parsing, UDP networking, and DNS response construction.
+This project is a small DNS server written in Go to learn DNS wire-format parsing, UDP and TCP networking, and DNS response construction.
 
 It is not a recursive resolver. It listens locally on `127.0.0.1:8053`, parses one DNS question, and serves authoritative A, AAAA, and SOA data for one configured zone. Negative in-zone responses include the zone SOA, while names outside the zone return `REFUSED`.
 
@@ -22,7 +22,8 @@ flowchart LR
     subgraph Query["Request path"]
         Client["dig or DNS client"]
         UDP["serveUDP"]
-        Handler["handlePacket"]
+        TCP["serveTCP<br/>length-prefixed framing"]
+        Handler["handlePacketWithLimit"]
         Parser["parseMessage"]
         Message["Message<br/>Header, Flags, Question"]
         Planner["planResponse<br/>select sections and RCODE"]
@@ -31,7 +32,9 @@ flowchart LR
         Encoder["appendResourceRecord"]
 
         Client -->|"UDP query bytes"| UDP
+        Client -->|"TCP byte stream"| TCP
         UDP --> Handler
+        TCP --> Handler
         Handler --> Parser
         Parser --> Message
         Message --> Planner
@@ -40,13 +43,15 @@ flowchart LR
         Plan --> Builder
         Builder --> Encoder
         Encoder -->|"DNS response bytes"| UDP
+        Encoder -->|"DNS response bytes"| TCP
         UDP -->|"UDP response"| Client
+        TCP -->|"length-prefixed TCP response"| Client
     end
 
     ZoneStore -->|"read-only lookup"| Planner
 ```
 
-The configuration file is read once before the UDP socket is opened. The validated runtime zone is then reused for every query.
+The configuration file is read once before the UDP and TCP listeners are opened. The validated runtime zone is then reused for every query.
 
 For example, run the server in one terminal:
 
@@ -68,9 +73,9 @@ The server receives the query, parses `example.com`, builds an answer for `1.2.3
 
 `main.go` calls `loadZone` with `records.json`. The loader decodes the JSON, canonicalizes the origin, names, and types, validates A and AAAA address families, and encodes the zone SOA. Repeated owner-and-type entries become one RRset. The loader rejects duplicate RDATA, inconsistent TTLs within an RRset, and out-of-zone records before creating the runtime `Zone`.
 
-If the file cannot be read or validated, the program exits before opening the UDP socket.
+If the file cannot be read or validated, the program exits before opening either network listener.
 
-### 2. Receive a UDP packet
+### 2. Receive a query over UDP or TCP
 
 `main.go` creates a UDP listener on `127.0.0.1:8053` and passes it to `serveUDP`. The server loop allocates a 512-byte buffer, then waits for packets with `ReadFromUDP`.
 
@@ -82,6 +87,8 @@ packet := buf[:n]
 
 This prevents unused bytes from the fixed buffer from becoming part of the DNS message.
 
+`main.go` also creates a TCP listener on the same address and passes it to `serveTCP`. Each accepted connection runs in its own goroutine, so one idle client does not block other clients. DNS over TCP is a byte stream, so `readTCPMessage` first reads a two-byte, big-endian message length and then uses `io.ReadFull` to read exactly that many bytes. The connection handler loops, allowing one TCP connection to carry multiple queries.
+
 ### 3. Parse the DNS query
 
 `parseMessage` in `dns.go` converts the packet bytes into a `Message` struct. It expects exactly one question and does this work in order:
@@ -92,11 +99,11 @@ This prevents unused bytes from the fixed buffer from becoming part of the DNS m
 
 `parseQName` reads DNS labels such as `03 www 07 example 03 com 00` and joins them into `www.example.com`. It returns the offset immediately after the terminating `00`; `parseQuestion` uses that offset to locate the two-byte QTYPE and QCLASS fields.
 
-The parser returns errors for truncated or malformed packets. `handlePacket` returns the error to `serveUDP`, which logs it and continues waiting for the next UDP packet instead of terminating the server.
+The parser returns errors for truncated or malformed packets. `handlePacketWithLimit` returns the error to the transport handler. `serveUDP` logs the error and waits for the next datagram. A malformed TCP frame or query closes only that client connection; the TCP listener continues accepting other clients.
 
 ### 4. Build a DNS response
 
-After a query is successfully parsed, `handlePacket` calls `buildResponse` in `response.go`.
+After a query is successfully parsed, `handlePacketWithLimit` calls `buildResponseWithLimit` in `response.go`.
 
 `buildResponse` receives the parsed `Message` and `Zone` from `main.go`. Each `Record` contains a TTL and wire-ready RDATA. It asks `planResponse` to classify the query before writing any bytes:
 
@@ -130,13 +137,13 @@ Positive answers use `0xc00c`, a pointer to the queried name at byte 12. A negat
 
 For negative caching, the SOA record in the authority section uses the smaller of its record TTL and SOA MINIMUM value.
 
-Because EDNS is not supported, `buildResponse` applies the classic 512-byte UDP message limit. `appendRecordsWithinLimit` encodes each candidate record separately and appends it only when the complete record fits. The builder then patches `ANCOUNT` and `NSCOUNT` with the records actually written.
+The transport supplies the response-size limit. Because EDNS is not supported, UDP uses the classic 512-byte DNS message limit. TCP uses the maximum size represented by its two-byte length prefix, 65,535 bytes. `appendRecordsWithinLimit` encodes each candidate record separately and appends it only when the complete record fits. The builder then patches `ANCOUNT` and `NSCOUNT` with the records actually written.
 
 If required answer or authority data is omitted, the builder sets `TC = 1`. A partial RRset made of complete resource records may remain in a TC-marked response, as described by [RFC 2181, sections 5.1 and 9](https://www.rfc-editor.org/rfc/rfc2181.html). The client is expected to retry using a transport that permits a larger response.
 
 ### 5. Send the response
 
-`serveUDP` sends the bytes returned by `handlePacket` to the original sender address with `WriteToUDP`. UDP responses are at most 512 bytes. `dig` receives the response and displays either:
+`serveUDP` sends response bytes to the original sender with `WriteToUDP`; UDP responses are at most 512 bytes. `handleTCPConnection` writes a two-byte response length followed by the response bytes. A client that receives a TC-marked UDP response can retry over TCP for the complete response. `dig` displays either:
 
 - A configured A, AAAA, or SOA answer.
 - A partial answer with `TC = 1` when required data exceeds the UDP limit.
@@ -148,18 +155,18 @@ If required answer or authority data is omitted, the builder sets `TC = 1`. A pa
 
 | File | Responsibility |
 | --- | --- |
-| `main.go` | Loads configured records, opens the UDP socket, and starts the server loop. |
+| `main.go` | Loads configured records, opens UDP and TCP listeners on the same port, and runs both server loops. |
 | `config.go` | Reads and validates A/AAAA/SOA JSON configuration, forms RRsets, and converts values into wire-ready runtime records. |
 | `config_test.go` | Tests SOA encoding, RRset rules, record types, address families, canonicalization, malformed input, and zone boundaries. |
 | `records.json` | Defines the zone origin, SOA metadata, and address records loaded when the server starts. |
 | `record.go` | Defines the generic runtime record containing TTL and wire-ready RDATA. |
 | `zone.go` | Groups the origin and records by owner name and DNS type, and classifies names as in-zone or out-of-zone. |
 | `zone_test.go` | Tests zone-boundary matching and owner-name existence. |
-| `server.go` | Receives and sends UDP packets within the classic 512-byte message limit, coordinates parsing and response building, and logs query results. |
-| `server_test.go` | Sends normal, oversized, SOA, NODATA, NXDOMAIN, and REFUSED queries over a loopback UDP socket. |
+| `server.go` | Handles UDP datagrams and length-prefixed TCP streams, applies transport response limits, coordinates parsing and response building, and logs query results. |
+| `server_test.go` | Tests TCP framing and sends DNS queries through real loopback UDP and TCP listeners, including an oversized RRset. |
 | `dns.go` | Parses DNS headers, flags, QNAMEs, questions, and one complete DNS message. |
 | `response_plan.go` | Applies zone policy and selects answer and authority records for a query. |
-| `response.go` | Encodes response headers, questions, and resource records, applying whole-record UDP truncation when necessary. |
+| `response.go` | Encodes response headers, questions, and resource records, applying whole-record truncation at a transport-provided limit. |
 | `dns_test.go` | Tests parser behavior and malformed DNS query handling. |
 | `response_test.go` | Tests response flags, answer counts, answer bytes, and unsupported query behavior. |
 | `README.md` | Provides setup instructions, `dig` demos, DNS wire-format background, and limitations. |
@@ -177,15 +184,17 @@ If required answer or authority data is omitted, the builder sets `TC = 1`. A pa
 | Name outside `example.com` | Returns `REFUSED` with no answers. |
 | Unsupported type on a configured name | Returns authoritative `NOERROR`/NODATA with the SOA in the authority section. |
 | Unsupported class | Returns a valid response with no answers. |
-| Malformed packet | Logs a parse or response-building error and keeps the UDP server running. |
+| Malformed packet | Logs a parse or response-building error while keeping the listener available for other queries. |
 
 The response plan is selected by zone membership, owner-name existence, QTYPE, and QCLASS. Answer and authority RDATA come from the selected runtime records.
 
 ## Design Decisions
 
-- The parser is separate from UDP networking so DNS byte handling can be tested without starting a server.
+- The parser is separate from UDP and TCP networking so DNS byte handling can be tested without starting a server.
 - The response builder is separate from `main.go` so response bytes can be tested directly.
-- Packet handling is separate from the UDP loop so parsing and response construction have a single testable boundary.
+- Packet handling is shared by the UDP and TCP loops, with the transport-specific response limit passed explicitly.
+- TCP framing is separate from DNS parsing because stream boundaries are not DNS message boundaries.
+- TCP connections are handled concurrently and may carry multiple sequential queries.
 - Each packet is parsed into a `Message` once, and that parsed message is passed to the response builder.
 - The response builder depends on parsed data rather than the original query bytes.
 - The zone is passed explicitly to the response builder instead of being read as global state.
@@ -210,7 +219,6 @@ The response plan is selected by zone membership, owner-name existence, QTYPE, a
 - No compressed QNAMEs in incoming queries.
 - No EDNS support; use `+noedns` with `dig` for the documented demo.
 - UDP responses use the classic 512-byte limit.
-- No TCP DNS fallback for retrying TC-marked responses.
 - No recursive resolution, upstream forwarding, or caching.
 - Configuration changes require restarting the server; live reload is not supported.
 - One configured zone only.
@@ -224,4 +232,4 @@ Run the unit tests:
 go test -count=1 ./...
 ```
 
-The test suite starts the server on an operating-system-assigned loopback UDP port and verifies normal and truncated RRsets, SOA, NODATA, NXDOMAIN, and REFUSED responses through a real socket. The oversized-response test reads into a 2048-byte client buffer, proving the server itself caps the datagram at 512 bytes. You can also run the server and use the `dig` commands in `README.md` for a manual demo.
+The test suite starts servers on operating-system-assigned loopback UDP and TCP ports. It verifies normal and truncated RRsets, SOA, NODATA, NXDOMAIN, and REFUSED responses through real sockets. TCP tests cover fragmented reads, malformed frames, multiple queries on one connection, and complete delivery of a 40-record RRset that is truncated over UDP. You can also run the server and use the `dig` commands in `README.md` for a manual demo.
