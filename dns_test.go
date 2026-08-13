@@ -464,3 +464,75 @@ func TestParseMessage(t *testing.T) {
 		})
 	}
 }
+
+func TestParseMessageParsesEDNSOPT(t *testing.T) {
+	query := sampleEDNSQueryWithMetadata(
+		sampleQueryWithTypeClass(TypeA, ClassIN),
+		1232,
+		0x01028000,
+		[]byte{0x00, 0x0a, 0x00, 0x00},
+	)
+
+	msg, err := parseMessage(query)
+	if err != nil {
+		t.Fatalf("parseMessage returned error: %v", err)
+	}
+	if msg.EDNS == nil {
+		t.Fatal("EDNS metadata is nil")
+	}
+	if msg.EDNS.UDPSize != 1232 {
+		t.Fatalf("EDNS UDP size = %d, want 1232", msg.EDNS.UDPSize)
+	}
+	if msg.EDNS.ExtendedRCode != 1 {
+		t.Fatalf("EDNS extended RCODE = %d, want 1", msg.EDNS.ExtendedRCode)
+	}
+	if msg.EDNS.Version != 2 {
+		t.Fatalf("EDNS version = %d, want 2", msg.EDNS.Version)
+	}
+	if !msg.EDNS.DNSSECOK {
+		t.Fatal("EDNS DNSSEC OK bit is false, want true")
+	}
+}
+
+func TestParseMessageRejectsMalformedEDNS(t *testing.T) {
+	baseQuery := sampleQueryWithTypeClass(TypeA, ClassIN)
+	validOPT := sampleEDNSQuery(baseQuery, 1232)[len(baseQuery):]
+
+	duplicateOPT := append([]byte(nil), baseQuery...)
+	duplicateOPT[10] = 0x00
+	duplicateOPT[11] = 0x02
+	duplicateOPT = append(duplicateOPT, validOPT...)
+	duplicateOPT = append(duplicateOPT, validOPT...)
+
+	nonRootOPT := append([]byte(nil), baseQuery...)
+	nonRootOPT[10] = 0x00
+	nonRootOPT[11] = 0x01
+	nonRootOPT = append(nonRootOPT,
+		0x01, 'x', 0x00,
+		0x00, 0x29,
+		0x04, 0xd0,
+		0x00, 0x00, 0x00, 0x00,
+		0x00, 0x00,
+	)
+
+	tests := []struct {
+		name  string
+		query []byte
+	}{
+		{
+			name:  "truncated OPT fields",
+			query: sampleEDNSQuery(baseQuery, 1232)[:len(sampleEDNSQuery(baseQuery, 1232))-1],
+		},
+		{name: "multiple OPT records", query: duplicateOPT},
+		{name: "non-root OPT owner", query: nonRootOPT},
+		{name: "undeclared trailing data", query: append(append([]byte(nil), baseQuery...), 0xff)},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if _, err := parseMessage(tt.query); err == nil {
+				t.Fatal("parseMessage returned nil error")
+			}
+		})
+	}
+}

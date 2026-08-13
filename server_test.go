@@ -321,6 +321,87 @@ func TestServeUDPTruncatesOversizedResponse(t *testing.T) {
 	}
 }
 
+func TestServeUDPReturnsCompleteOversizedResponseWithEDNS(t *testing.T) {
+	serverConn, err := net.ListenUDP("udp", &net.UDPAddr{
+		IP:   net.ParseIP("127.0.0.1"),
+		Port: 0,
+	})
+	if err != nil {
+		t.Fatalf("listen for UDP: %v", err)
+	}
+
+	serverDone := make(chan error, 1)
+	go func() {
+		serverDone <- serveUDP(serverConn, testZoneWithLargeARRset(40), io.Discard)
+	}()
+	t.Cleanup(func() {
+		_ = serverConn.Close()
+		select {
+		case err := <-serverDone:
+			if err != nil {
+				t.Errorf("serveUDP returned error: %v", err)
+			}
+		case <-time.After(time.Second):
+			t.Error("serveUDP did not stop after its connection was closed")
+		}
+	})
+
+	clientConn, err := net.DialUDP("udp", nil, serverConn.LocalAddr().(*net.UDPAddr))
+	if err != nil {
+		t.Fatalf("dial UDP server: %v", err)
+	}
+	defer clientConn.Close()
+	if err := clientConn.SetDeadline(time.Now().Add(time.Second)); err != nil {
+		t.Fatalf("set UDP deadline: %v", err)
+	}
+
+	baseQuery := samplePoolExampleAQuery()
+	query := sampleEDNSQuery(baseQuery, 1232)
+	if _, err := clientConn.Write(query); err != nil {
+		t.Fatalf("write EDNS UDP query: %v", err)
+	}
+
+	buf := make([]byte, 2048)
+	n, err := clientConn.Read(buf)
+	if err != nil {
+		t.Fatalf("read EDNS UDP response: %v", err)
+	}
+	response := buf[:n]
+
+	if len(response) <= maxDNSUDPMessageSize {
+		t.Fatalf("response length = %d, want greater than %d", len(response), maxDNSUDPMessageSize)
+	}
+	if len(response) > 1232 {
+		t.Fatalf("response length = %d, want at most 1232", len(response))
+	}
+	flags := binary.BigEndian.Uint16(response[2:4])
+	if flags&0x0200 != 0 {
+		t.Fatalf("TC flag is set for complete EDNS response; flags=%016b", flags)
+	}
+	if answerCount := binary.BigEndian.Uint16(response[6:8]); answerCount != 40 {
+		t.Fatalf("ANCOUNT = %d, want 40", answerCount)
+	}
+	if additionalCount := binary.BigEndian.Uint16(response[10:12]); additionalCount != 1 {
+		t.Fatalf("ARCOUNT = %d, want 1", additionalCount)
+	}
+
+	offset := len(baseQuery)
+	for i := 0; i < 40; i++ {
+		answer := parseTestResourceRecord(t, response, offset)
+		offset = answer.Next
+	}
+	opt := parseTestResourceRecord(t, response, offset)
+	if opt.Type != TypeOPT {
+		t.Fatalf("additional TYPE = %d, want %d", opt.Type, TypeOPT)
+	}
+	if opt.Class != maxEDNSUDPMessageSize {
+		t.Fatalf("OPT UDP payload size = %d, want %d", opt.Class, maxEDNSUDPMessageSize)
+	}
+	if opt.Next != len(response) {
+		t.Fatalf("parsed response through offset %d, response length is %d", opt.Next, len(response))
+	}
+}
+
 func TestServeTCPReturnsCompleteResponseAndReusesConnection(t *testing.T) {
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {

@@ -19,6 +19,7 @@ The server currently supports:
 * Parsing a DNS QNAME from length-prefixed labels
 * Parsing QTYPE and QCLASS
 * Parsing one complete DNS query message with exactly one question
+* Parsing EDNS(0) OPT metadata from the additional section
 * Listening for DNS queries over UDP and TCP on 127.0.0.1:8053
 * Building a valid DNS response packet
 * Returning configured A, AAAA, and SOA records for ClassIN
@@ -27,6 +28,8 @@ The server currently supports:
 * Returning NOERROR with the zone SOA for missing record types on existing names
 * Returning REFUSED for names outside the configured zone
 * Returning a valid empty response for unsupported query classes
+* Negotiating UDP response sizes up to a 1232-byte server cap
+* Returning `BADVERS` for unsupported EDNS versions
 * Returning clear errors for malformed or truncated input
 
 The main parser function is:
@@ -42,6 +45,7 @@ type Message struct {
     Header   Header
     Flags    Flags
     Question Question
+    EDNS     *EDNS
 }
 ```
 
@@ -313,15 +317,18 @@ DNS server listening on 127.0.0.1:8053 over UDP and TCP
 
 Run:
 ```
-dig +noedns @127.0.0.1 -p 8053 example.com A
+dig @127.0.0.1 -p 8053 example.com A
 ```
 This asks the local DNS server for the IPv4 address of example.com.
 
 Expected behavior:
 ```
 ;; ->>HEADER<<- opcode: QUERY, status: NOERROR
-;; flags: qr aa rd; QUERY: 1, ANSWER: 1, AUTHORITY: 0, ADDITIONAL: 0
+;; flags: qr aa rd; QUERY: 1, ANSWER: 1, AUTHORITY: 0, ADDITIONAL: 1
 ;; WARNING: recursion requested but not available
+
+;; OPT PSEUDOSECTION:
+; EDNS: version: 0, flags:; udp: 1232
 
 ;; QUESTION SECTION:
 ;example.com.                   IN      A
@@ -341,7 +348,7 @@ This does not mean the server performed a real DNS lookup. It means the server f
 Run:
 
 ```bash
-dig +noedns @127.0.0.1 -p 8053 pool.example.com A
+dig @127.0.0.1 -p 8053 pool.example.com A
 ```
 
 Expected answer section:
@@ -357,7 +364,7 @@ Both records belong to one A RRset, so the response has `ANSWER: 2`. The server 
 
 Run:
 
-`dig +noedns @127.0.0.1 -p 8053 example.com AAAA`
+`dig @127.0.0.1 -p 8053 example.com AAAA`
 
 This asks the local DNS server for the IPv6 address of example.com.
 
@@ -379,7 +386,7 @@ The same general resource-record encoder writes both A and AAAA answers. The con
 Query the zone metadata directly with:
 
 ```bash
-dig +noedns @127.0.0.1 -p 8053 example.com SOA
+dig @127.0.0.1 -p 8053 example.com SOA
 ```
 
 The response contains the configured SOA in the answer section.
@@ -407,28 +414,34 @@ The answer section uses DNS name compression:
 
 This points back to byte offset 12, where the original QNAME starts in the question section.
 
-## UDP Response Truncation
+## UDP Response Sizing and Truncation
 
-Without EDNS, DNS-over-UDP responses are limited to 512 bytes. The response builder encodes resource records one at a time and appends only complete records that fit within that limit.
+Without EDNS, DNS-over-UDP responses are limited to 512 bytes. An EDNS(0) query advertises the largest UDP payload the client can receive in the OPT record's CLASS field. The server uses the advertised value with a lower bound of 512 bytes and an upper server cap of 1232 bytes, following the negotiation model in [RFC 6891](https://www.rfc-editor.org/rfc/rfc6891.html).
+
+```text
+response limit = min(max(client advertised size, 512), 1232)
+```
+
+The server includes an OPT record in every response to an EDNS request and reserves that record's 11 bytes before selecting answers. The response builder encodes resource records one at a time and appends only complete records that fit within the resulting limit.
 
 When required answer or authority data does not fit, the server:
 
 - Stops before the next complete resource record.
 - Sets `TC = 1`.
 - Sets `ANCOUNT` and `NSCOUNT` to the records actually included.
-- Sends a response no larger than 512 bytes.
+- Sends a response no larger than the negotiated limit.
 
-A truncated response may contain part of an RRset. A client can retry the query over TCP to receive the complete response.
+A truncated response may contain part of an RRset. A client can retry the query over TCP to receive the complete response. Use `+noedns` with `dig` to exercise the legacy 512-byte path explicitly.
 
 The server also listens for DNS over TCP on the same address. Each TCP DNS message uses a two-byte, big-endian length prefix. A connection can carry multiple queries, and different client connections are handled concurrently.
 
 Force a TCP query with:
 
 ```bash
-dig +tcp +noedns @127.0.0.1 -p 8053 pool.example.com A
+dig +tcp @127.0.0.1 -p 8053 pool.example.com A
 ```
 
-TCP responses use the complete selected RRset when it fits within the protocol's 65,535-byte message limit. The integration tests configure a 40-record RRset and verify that UDP returns a response no larger than 512 bytes with `TC = 1`, while TCP returns all 40 records without `TC`.
+TCP responses use the complete selected RRset when it fits within the protocol's 65,535-byte message limit. The integration tests configure a 40-record RRset and verify three paths: classic UDP truncates at 512 bytes, EDNS UDP returns all 40 records within 1232 bytes, and TCP returns all 40 records without `TC`.
 
 ## Tested Malformed Cases
 
@@ -443,6 +456,9 @@ Tested malformed cases include:
 - Short QTYPE
 - Short QCLASS
 - Bad QNAME passed through `parseMessage`
+- Truncated or misplaced OPT records
+- Multiple OPT records in one query
+- Undeclared trailing bytes
 
 Additional behavior coverage includes:
 
@@ -453,6 +469,9 @@ Additional behavior coverage includes:
 - Response builder limits classic UDP responses to 512 bytes
 - Oversized responses contain only complete resource records and set `TC`
 - Truncated response counts match the records actually included
+- EDNS UDP limits honor the client advertisement and the 1232-byte server cap
+- EDNS responses include an OPT record without exceeding the negotiated size
+- Unsupported EDNS versions return `BADVERS`
 - TCP messages use a two-byte length prefix and tolerate fragmented stream reads
 - Malformed and incomplete TCP frames are rejected
 - One TCP connection can carry multiple DNS queries
@@ -463,7 +482,7 @@ Additional behavior coverage includes:
 - Response builder returns NOERROR/NODATA plus an SOA authority record for missing types
 - Response builder returns REFUSED for out-of-zone names
 - General resource-record encoding rejects oversized RDATA
-- Loopback UDP and TCP integration covers normal and truncated RRsets, SOA, NODATA, NXDOMAIN, and REFUSED
+- Loopback UDP and TCP integration covers normal, EDNS-sized, and truncated RRsets, SOA, NODATA, NXDOMAIN, and REFUSED
 - JSON loader accepts valid RRsets and rejects duplicate data or inconsistent RRset TTLs
 
 ## Current Limitations
@@ -474,8 +493,8 @@ This project intentionally does not support everything yet.
 
 - Supports one question only
 - Does not support compressed QNAMEs in incoming queries yet
-- Does not support EDNS yet; use `+noedns` with `dig`
-- UDP responses therefore use the classic 512-byte limit
+- EDNS support is limited to version 0 payload-size negotiation; DNSSEC data and other EDNS options are not implemented
+- UDP responses are limited to 512 bytes without EDNS and 1232 bytes with EDNS
 - Does not perform recursive resolution yet
 - Does not forward queries to upstream DNS servers yet
 - Does not implement caching yet

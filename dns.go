@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/binary"
 	"fmt"
 	"strings"
 )
@@ -11,6 +12,7 @@ const (
 	TypeA    uint16 = 1
 	TypeSOA  uint16 = 6
 	TypeAAAA uint16 = 28
+	TypeOPT  uint16 = 41
 	ClassIN  uint16 = 1
 )
 
@@ -20,6 +22,14 @@ func readU16(data []byte, offset int) (uint16, error) {
 	}
 
 	return uint16(data[offset])<<8 | uint16(data[offset+1]), nil
+}
+
+func readU32(data []byte, offset int) (uint32, error) {
+	if offset < 0 || offset+4 > len(data) {
+		return 0, fmt.Errorf("not enough bytes to read uint32 at offset %d", offset)
+	}
+
+	return binary.BigEndian.Uint32(data[offset : offset+4]), nil
 }
 
 type Header struct {
@@ -141,6 +151,71 @@ type Question struct {
 	QClass uint16
 }
 
+type EDNS struct {
+	UDPSize       uint16
+	ExtendedRCode uint8
+	Version       uint8
+	DNSSECOK      bool
+}
+
+type wireResourceRecord struct {
+	Name   string
+	Type   uint16
+	Class  uint16
+	TTL    uint32
+	RData  []byte
+	Offset int
+}
+
+func parseWireResourceRecord(data []byte, offset int) (wireResourceRecord, error) {
+	name, offset, err := parseQName(data, offset)
+	if err != nil {
+		return wireResourceRecord{}, fmt.Errorf("parse owner name: %w", err)
+	}
+
+	recordType, err := readU16(data, offset)
+	if err != nil {
+		return wireResourceRecord{}, fmt.Errorf("parse type: %w", err)
+	}
+	offset += 2
+
+	class, err := readU16(data, offset)
+	if err != nil {
+		return wireResourceRecord{}, fmt.Errorf("parse class: %w", err)
+	}
+	offset += 2
+
+	ttl, err := readU32(data, offset)
+	if err != nil {
+		return wireResourceRecord{}, fmt.Errorf("parse TTL: %w", err)
+	}
+	offset += 4
+
+	rDataLength, err := readU16(data, offset)
+	if err != nil {
+		return wireResourceRecord{}, fmt.Errorf("parse RDLENGTH: %w", err)
+	}
+	offset += 2
+
+	rDataEnd := offset + int(rDataLength)
+	if rDataEnd > len(data) {
+		return wireResourceRecord{}, fmt.Errorf(
+			"RDLENGTH %d exceeds remaining message length %d",
+			rDataLength,
+			len(data)-offset,
+		)
+	}
+
+	return wireResourceRecord{
+		Name:   name,
+		Type:   recordType,
+		Class:  class,
+		TTL:    ttl,
+		RData:  data[offset:rDataEnd],
+		Offset: rDataEnd,
+	}, nil
+}
+
 func parseQuestion(data []byte, offset int) (Question, int, error) {
 
 	name, offset, err := parseQName(data, offset)
@@ -171,6 +246,7 @@ type Message struct {
 	Header   Header
 	Flags    Flags
 	Question Question
+	EDNS     *EDNS
 }
 
 func parseMessage(data []byte) (Message, error) {
@@ -185,14 +261,56 @@ func parseMessage(data []byte) (Message, error) {
 
 	flags := parseFlags(header.Flags)
 
-	question, _, err := parseQuestion(data, HeaderSize)
+	question, offset, err := parseQuestion(data, HeaderSize)
 	if err != nil {
 		return Message{}, fmt.Errorf("parse question: %w", err)
+	}
+
+	for i := 0; i < int(header.ANCount)+int(header.NSCount); i++ {
+		record, err := parseWireResourceRecord(data, offset)
+		if err != nil {
+			return Message{}, fmt.Errorf("parse answer or authority record %d: %w", i, err)
+		}
+		if record.Type == TypeOPT {
+			return Message{}, fmt.Errorf("OPT record must appear in the additional section")
+		}
+		offset = record.Offset
+	}
+
+	var edns *EDNS
+	for i := 0; i < int(header.ARCount); i++ {
+		record, err := parseWireResourceRecord(data, offset)
+		if err != nil {
+			return Message{}, fmt.Errorf("parse additional record %d: %w", i, err)
+		}
+		offset = record.Offset
+
+		if record.Type != TypeOPT {
+			continue
+		}
+		if edns != nil {
+			return Message{}, fmt.Errorf("multiple OPT records are not allowed")
+		}
+		if record.Name != "" {
+			return Message{}, fmt.Errorf("OPT owner name must be the root domain")
+		}
+
+		edns = &EDNS{
+			UDPSize:       record.Class,
+			ExtendedRCode: uint8(record.TTL >> 24),
+			Version:       uint8(record.TTL >> 16),
+			DNSSECOK:      record.TTL&0x00008000 != 0,
+		}
+	}
+
+	if offset != len(data) {
+		return Message{}, fmt.Errorf("%d trailing bytes after declared DNS sections", len(data)-offset)
 	}
 
 	return Message{
 		Header:   header,
 		Flags:    flags,
 		Question: question,
+		EDNS:     edns,
 	}, nil
 }

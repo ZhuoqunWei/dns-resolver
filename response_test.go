@@ -122,6 +122,30 @@ func samplePoolExampleAQuery() []byte {
 	}
 }
 
+func sampleEDNSQuery(query []byte, udpPayloadSize uint16) []byte {
+	return sampleEDNSQueryWithMetadata(query, udpPayloadSize, 0, nil)
+}
+
+func sampleEDNSQueryWithMetadata(
+	query []byte,
+	udpPayloadSize uint16,
+	ttl uint32,
+	options []byte,
+) []byte {
+	result := append([]byte(nil), query...)
+	binary.BigEndian.PutUint16(result[10:12], 1)
+
+	opt := make([]byte, 11+len(options))
+	opt[0] = 0x00
+	binary.BigEndian.PutUint16(opt[1:3], TypeOPT)
+	binary.BigEndian.PutUint16(opt[3:5], udpPayloadSize)
+	binary.BigEndian.PutUint32(opt[5:9], ttl)
+	binary.BigEndian.PutUint16(opt[9:11], uint16(len(options)))
+	copy(opt[11:], options)
+
+	return append(result, opt...)
+}
+
 func buildTestResponse(t *testing.T, query []byte) []byte {
 	t.Helper()
 
@@ -486,6 +510,157 @@ func TestBuildResponseReturnsAllRecordsInRRset(t *testing.T) {
 	}
 	if offset != len(response) {
 		t.Fatalf("parsed response through offset %d, response length is %d", offset, len(response))
+	}
+}
+
+func TestBuildResponseIncludesEDNSOPT(t *testing.T) {
+	baseQuery := sampleQueryWithTypeClass(TypeA, ClassIN)
+	query := sampleEDNSQuery(baseQuery, 1232)
+	msg, err := parseMessage(query)
+	if err != nil {
+		t.Fatalf("parseMessage returned error: %v", err)
+	}
+
+	response, err := buildResponse(msg, testZone())
+	if err != nil {
+		t.Fatalf("buildResponse returned error: %v", err)
+	}
+	if additionalCount := binary.BigEndian.Uint16(response[10:12]); additionalCount != 1 {
+		t.Fatalf("ARCOUNT = %d, want 1", additionalCount)
+	}
+
+	answer := parseTestResourceRecord(t, response, len(baseQuery))
+	opt := parseTestResourceRecord(t, response, answer.Next)
+	if opt.Name != "" {
+		t.Fatalf("OPT owner name = %q, want root", opt.Name)
+	}
+	if opt.Type != TypeOPT {
+		t.Fatalf("OPT TYPE = %d, want %d", opt.Type, TypeOPT)
+	}
+	if opt.Class != maxEDNSUDPMessageSize {
+		t.Fatalf("OPT UDP payload size = %d, want %d", opt.Class, maxEDNSUDPMessageSize)
+	}
+	if opt.TTL != 0 {
+		t.Fatalf("OPT TTL metadata = %d, want 0", opt.TTL)
+	}
+	if len(opt.RData) != 0 {
+		t.Fatalf("OPT RDATA length = %d, want 0", len(opt.RData))
+	}
+	if opt.Next != len(response) {
+		t.Fatalf("parsed response through offset %d, response length is %d", opt.Next, len(response))
+	}
+}
+
+func TestBuildResponseReturnsBADVERSForUnsupportedEDNSVersion(t *testing.T) {
+	baseQuery := sampleQueryWithTypeClass(TypeA, ClassIN)
+	query := sampleEDNSQueryWithMetadata(baseQuery, 1232, 0x00010000, nil)
+	msg, err := parseMessage(query)
+	if err != nil {
+		t.Fatalf("parseMessage returned error: %v", err)
+	}
+
+	response, err := buildResponse(msg, testZone())
+	if err != nil {
+		t.Fatalf("buildResponse returned error: %v", err)
+	}
+	if answerCount := binary.BigEndian.Uint16(response[6:8]); answerCount != 0 {
+		t.Fatalf("ANCOUNT = %d, want 0", answerCount)
+	}
+	if additionalCount := binary.BigEndian.Uint16(response[10:12]); additionalCount != 1 {
+		t.Fatalf("ARCOUNT = %d, want 1", additionalCount)
+	}
+	if headerRCode := binary.BigEndian.Uint16(response[2:4]) & 0x000f; headerRCode != 0 {
+		t.Fatalf("header RCODE = %d, want 0 as lower BADVERS bits", headerRCode)
+	}
+
+	opt := parseTestResourceRecord(t, response, len(baseQuery))
+	if extendedRCode := uint8(opt.TTL >> 24); extendedRCode != extendedRCodeBadVersion {
+		t.Fatalf("extended RCODE = %d, want %d (BADVERS)", extendedRCode, extendedRCodeBadVersion)
+	}
+	if version := uint8(opt.TTL >> 16); version != 0 {
+		t.Fatalf("response EDNS version = %d, want 0", version)
+	}
+}
+
+func TestUDPResponseSizeLimit(t *testing.T) {
+	tests := []struct {
+		name      string
+		edns      *EDNS
+		wantLimit int
+	}{
+		{name: "classic DNS", wantLimit: maxDNSUDPMessageSize},
+		{name: "advertised value below 512", edns: &EDNS{UDPSize: 128}, wantLimit: maxDNSUDPMessageSize},
+		{name: "advertised value within server cap", edns: &EDNS{UDPSize: 900}, wantLimit: 900},
+		{name: "advertised value above server cap", edns: &EDNS{UDPSize: 4096}, wantLimit: maxEDNSUDPMessageSize},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := udpResponseSizeLimit(Message{EDNS: tt.edns})
+			if got != tt.wantLimit {
+				t.Fatalf("udpResponseSizeLimit() = %d, want %d", got, tt.wantLimit)
+			}
+		})
+	}
+}
+
+func TestHandlePacketUsesNegotiatedEDNSSize(t *testing.T) {
+	tests := []struct {
+		name            string
+		advertisedSize  uint16
+		recordCount     int
+		wantAnswerCount uint16
+		wantTruncated   bool
+		wantMaxSize     int
+	}{
+		{
+			name:            "client size fits complete RRset",
+			advertisedSize:  1232,
+			recordCount:     40,
+			wantAnswerCount: 40,
+			wantMaxSize:     1232,
+		},
+		{
+			name:            "client size limits response",
+			advertisedSize:  600,
+			recordCount:     40,
+			wantAnswerCount: 34,
+			wantTruncated:   true,
+			wantMaxSize:     600,
+		},
+		{
+			name:            "server cap limits response",
+			advertisedSize:  4096,
+			recordCount:     100,
+			wantAnswerCount: 74,
+			wantTruncated:   true,
+			wantMaxSize:     maxEDNSUDPMessageSize,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			baseQuery := samplePoolExampleAQuery()
+			query := sampleEDNSQuery(baseQuery, tt.advertisedSize)
+			_, response, err := handlePacket(query, testZoneWithLargeARRset(tt.recordCount))
+			if err != nil {
+				t.Fatalf("handlePacket returned error: %v", err)
+			}
+
+			if len(response) > tt.wantMaxSize {
+				t.Fatalf("response length = %d, want at most %d", len(response), tt.wantMaxSize)
+			}
+			if answerCount := binary.BigEndian.Uint16(response[6:8]); answerCount != tt.wantAnswerCount {
+				t.Fatalf("ANCOUNT = %d, want %d", answerCount, tt.wantAnswerCount)
+			}
+			if additionalCount := binary.BigEndian.Uint16(response[10:12]); additionalCount != 1 {
+				t.Fatalf("ARCOUNT = %d, want 1", additionalCount)
+			}
+			flags := binary.BigEndian.Uint16(response[2:4])
+			if truncated := flags&0x0200 != 0; truncated != tt.wantTruncated {
+				t.Fatalf("TC = %t, want %t; flags=%016b", truncated, tt.wantTruncated, flags)
+			}
+		})
 	}
 }
 

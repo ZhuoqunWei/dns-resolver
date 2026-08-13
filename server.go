@@ -13,7 +13,12 @@ import (
 var dnsLogMu sync.Mutex
 
 func handlePacket(packet []byte, zone Zone) (Message, []byte, error) {
-	return handlePacketWithLimit(packet, zone, maxDNSUDPMessageSize)
+	msg, err := parseMessage(packet)
+	if err != nil {
+		return Message{}, nil, fmt.Errorf("parse message: %w", err)
+	}
+
+	return buildPacketResponse(msg, zone, udpResponseSizeLimit(msg))
 }
 
 func handlePacketWithLimit(packet []byte, zone Zone, responseLimit int) (Message, []byte, error) {
@@ -22,6 +27,10 @@ func handlePacketWithLimit(packet []byte, zone Zone, responseLimit int) (Message
 		return Message{}, nil, fmt.Errorf("parse message: %w", err)
 	}
 
+	return buildPacketResponse(msg, zone, responseLimit)
+}
+
+func buildPacketResponse(msg Message, zone Zone, responseLimit int) (Message, []byte, error) {
 	response, err := buildResponseWithLimit(msg, zone, responseLimit)
 	if err != nil {
 		return msg, nil, fmt.Errorf("build response: %w", err)
@@ -30,8 +39,24 @@ func handlePacketWithLimit(packet []byte, zone Zone, responseLimit int) (Message
 	return msg, response, nil
 }
 
+func udpResponseSizeLimit(msg Message) int {
+	if msg.EDNS == nil {
+		return maxDNSUDPMessageSize
+	}
+
+	advertised := int(msg.EDNS.UDPSize)
+	if advertised < maxDNSUDPMessageSize {
+		return maxDNSUDPMessageSize
+	}
+	if advertised > maxEDNSUDPMessageSize {
+		return maxEDNSUDPMessageSize
+	}
+
+	return advertised
+}
+
 func serveUDP(conn *net.UDPConn, zone Zone, output io.Writer) error {
-	buf := make([]byte, maxDNSUDPMessageSize)
+	buf := make([]byte, maxEDNSUDPMessageSize)
 
 	for {
 		n, remoteAddr, err := conn.ReadFromUDP(buf)

@@ -7,11 +7,14 @@ import (
 )
 
 const (
-	maxDNSUDPMessageSize = 512
-	maxDNSTCPMessageSize = 0xffff
+	maxDNSUDPMessageSize  = 512
+	maxEDNSUDPMessageSize = 1232
+	maxDNSTCPMessageSize  = 0xffff
 
 	rCodeNXDomain uint16 = 3
 	rCodeRefused  uint16 = 5
+
+	extendedRCodeBadVersion uint8 = 1
 )
 
 func buildResponse(msg Message, zone Zone) ([]byte, error) {
@@ -21,6 +24,11 @@ func buildResponse(msg Message, zone Zone) ([]byte, error) {
 func buildResponseWithLimit(msg Message, zone Zone, sizeLimit int) ([]byte, error) {
 	question := msg.Question
 	plan := planResponse(question, zone)
+	var extendedRCode uint8
+	if msg.EDNS != nil && msg.EDNS.Version != 0 {
+		plan = responsePlan{}
+		extendedRCode = extendedRCodeBadVersion
+	}
 
 	encodedName, err := encodeQName(question.Name)
 	if err != nil {
@@ -71,10 +79,17 @@ func buildResponseWithLimit(msg Message, zone Zone, sizeLimit int) ([]byte, erro
 	binary.BigEndian.PutUint16(questionFields[2:4], question.QClass)
 	response = append(response, questionFields...)
 
-	if len(response) > sizeLimit {
+	var optRecord []byte
+	recordsLimit := sizeLimit
+	if msg.EDNS != nil {
+		optRecord = encodeOPTRecord(maxEDNSUDPMessageSize, extendedRCode)
+		recordsLimit -= len(optRecord)
+	}
+
+	if len(response) > recordsLimit {
 		return nil, fmt.Errorf(
-			"response header and question require %d bytes, exceeding size limit %d",
-			len(response),
+			"response header, question, and required metadata need %d bytes, exceeding size limit %d",
+			len(response)+len(optRecord),
 			sizeLimit,
 		)
 	}
@@ -86,7 +101,7 @@ func buildResponseWithLimit(msg Message, zone Zone, sizeLimit int) ([]byte, erro
 	response, answerCount, truncated, err = appendRecordsWithinLimit(
 		response,
 		plan.Answers,
-		sizeLimit,
+		recordsLimit,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("encode answer records: %w", err)
@@ -97,12 +112,18 @@ func buildResponseWithLimit(msg Message, zone Zone, sizeLimit int) ([]byte, erro
 		response, authorityCount, authorityTruncated, err = appendRecordsWithinLimit(
 			response,
 			plan.Authorities,
-			sizeLimit,
+			recordsLimit,
 		)
 		if err != nil {
 			return nil, fmt.Errorf("encode authority records: %w", err)
 		}
 		truncated = authorityTruncated
+	}
+
+	var additionalCount uint16
+	if msg.EDNS != nil {
+		response = append(response, optRecord...)
+		additionalCount = 1
 	}
 
 	if truncated {
@@ -111,8 +132,19 @@ func buildResponseWithLimit(msg Message, zone Zone, sizeLimit int) ([]byte, erro
 	binary.BigEndian.PutUint16(response[2:4], flags)
 	binary.BigEndian.PutUint16(response[6:8], answerCount)
 	binary.BigEndian.PutUint16(response[8:10], authorityCount)
+	binary.BigEndian.PutUint16(response[10:12], additionalCount)
 
 	return response, nil
+}
+
+func encodeOPTRecord(udpPayloadSize uint16, extendedRCode uint8) []byte {
+	record := make([]byte, 11)
+	record[0] = 0x00 // root owner name
+	binary.BigEndian.PutUint16(record[1:3], TypeOPT)
+	binary.BigEndian.PutUint16(record[3:5], udpPayloadSize)
+	record[5] = extendedRCode
+	// EDNS version, flags, and RDLENGTH remain zero.
+	return record
 }
 
 func appendRecordsWithinLimit(
