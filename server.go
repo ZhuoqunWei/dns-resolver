@@ -8,6 +8,12 @@ import (
 	"io"
 	"net"
 	"sync"
+	"time"
+)
+
+const (
+	tcpIdleTimeout  = 10 * time.Second
+	tcpWriteTimeout = 5 * time.Second
 )
 
 var dnsLogMu sync.Mutex
@@ -118,7 +124,34 @@ func serveTCP(listener net.Listener, zone Zone, output io.Writer) error {
 }
 
 func handleTCPConnection(conn net.Conn, zone Zone, output io.Writer) error {
+	return handleTCPConnectionWithTimeouts(
+		conn,
+		zone,
+		output,
+		tcpIdleTimeout,
+		tcpWriteTimeout,
+	)
+}
+
+func handleTCPConnectionWithTimeouts(
+	conn net.Conn,
+	zone Zone,
+	output io.Writer,
+	readTimeout time.Duration,
+	writeTimeout time.Duration,
+) error {
+	if readTimeout <= 0 {
+		return fmt.Errorf("TCP read timeout must be positive")
+	}
+	if writeTimeout <= 0 {
+		return fmt.Errorf("TCP write timeout must be positive")
+	}
+
 	for {
+		if err := conn.SetReadDeadline(time.Now().Add(readTimeout)); err != nil {
+			return fmt.Errorf("set TCP read deadline: %w", err)
+		}
+
 		packet, err := readTCPMessage(conn)
 		if errors.Is(err, io.EOF) {
 			return nil
@@ -133,6 +166,10 @@ func handleTCPConnection(conn net.Conn, zone Zone, output io.Writer) error {
 		}
 
 		logDNSQuery(output, "TCP", conn.RemoteAddr(), len(packet), msg, response)
+
+		if err := conn.SetWriteDeadline(time.Now().Add(writeTimeout)); err != nil {
+			return fmt.Errorf("set TCP write deadline: %w", err)
+		}
 
 		if err := writeTCPMessage(conn, response); err != nil {
 			return fmt.Errorf("write DNS message: %w", err)

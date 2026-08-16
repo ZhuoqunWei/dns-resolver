@@ -3,12 +3,41 @@ package main
 import (
 	"bytes"
 	"encoding/binary"
+	"errors"
 	"io"
 	"net"
+	"sync"
 	"testing"
 	"testing/iotest"
 	"time"
 )
+
+type deadlineTrackingConn struct {
+	net.Conn
+	mu                 sync.Mutex
+	readDeadlineCalls  int
+	writeDeadlineCalls int
+}
+
+func (c *deadlineTrackingConn) SetReadDeadline(deadline time.Time) error {
+	c.mu.Lock()
+	c.readDeadlineCalls++
+	c.mu.Unlock()
+	return c.Conn.SetReadDeadline(deadline)
+}
+
+func (c *deadlineTrackingConn) SetWriteDeadline(deadline time.Time) error {
+	c.mu.Lock()
+	c.writeDeadlineCalls++
+	c.mu.Unlock()
+	return c.Conn.SetWriteDeadline(deadline)
+}
+
+func (c *deadlineTrackingConn) deadlineCalls() (int, int) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.readDeadlineCalls, c.writeDeadlineCalls
+}
 
 func TestHandlePacketRejectsMalformedQuery(t *testing.T) {
 	if _, _, err := handlePacket([]byte{0x00}, testZone()); err == nil {
@@ -544,6 +573,155 @@ func TestHandleTCPConnectionRejectsIncompleteFrame(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("handleTCPConnection did not return after incomplete frame")
+	}
+}
+
+func TestHandleTCPConnectionTimesOutIncompleteReads(t *testing.T) {
+	tests := []struct {
+		name    string
+		partial []byte
+	}{
+		{name: "idle connection"},
+		{name: "partial length prefix", partial: []byte{0x00}},
+		{name: "partial DNS message", partial: []byte{0x00, 0x04, 0x12, 0x34}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			serverConn, clientConn := net.Pipe()
+			defer serverConn.Close()
+			defer clientConn.Close()
+
+			done := make(chan error, 1)
+			go func() {
+				done <- handleTCPConnectionWithTimeouts(
+					serverConn,
+					testZone(),
+					io.Discard,
+					40*time.Millisecond,
+					time.Second,
+				)
+			}()
+
+			if len(tt.partial) > 0 {
+				if _, err := clientConn.Write(tt.partial); err != nil {
+					t.Fatalf("write partial TCP frame: %v", err)
+				}
+			}
+
+			select {
+			case err := <-done:
+				requireTimeoutError(t, err)
+			case <-time.After(time.Second):
+				t.Fatal("TCP connection handler did not return after read timeout")
+			}
+		})
+	}
+}
+
+func TestHandleTCPConnectionTimesOutBlockedWrite(t *testing.T) {
+	serverConn, clientConn := net.Pipe()
+	defer serverConn.Close()
+	defer clientConn.Close()
+
+	done := make(chan error, 1)
+	go func() {
+		done <- handleTCPConnectionWithTimeouts(
+			serverConn,
+			testZone(),
+			io.Discard,
+			time.Second,
+			40*time.Millisecond,
+		)
+	}()
+
+	query := sampleQueryWithTypeClass(TypeA, ClassIN)
+	frame := make([]byte, 2+len(query))
+	binary.BigEndian.PutUint16(frame[0:2], uint16(len(query)))
+	copy(frame[2:], query)
+	if err := writeTestBytes(clientConn, frame); err != nil {
+		t.Fatalf("write TCP query: %v", err)
+	}
+
+	select {
+	case err := <-done:
+		requireTimeoutError(t, err)
+	case <-time.After(time.Second):
+		t.Fatal("TCP connection handler did not return after write timeout")
+	}
+}
+
+func TestHandleTCPConnectionRefreshesDeadlinesForEachQuery(t *testing.T) {
+	serverConn, clientConn := net.Pipe()
+	trackedConn := &deadlineTrackingConn{Conn: serverConn}
+	defer trackedConn.Close()
+
+	done := make(chan error, 1)
+	go func() {
+		done <- handleTCPConnectionWithTimeouts(
+			trackedConn,
+			testZone(),
+			io.Discard,
+			time.Second,
+			time.Second,
+		)
+	}()
+	if err := clientConn.SetDeadline(time.Now().Add(2 * time.Second)); err != nil {
+		t.Fatalf("set client deadline: %v", err)
+	}
+
+	firstResponse := exchangeTestTCPMessage(t, clientConn, sampleQueryWithTypeClass(TypeA, ClassIN))
+	if answerCount := binary.BigEndian.Uint16(firstResponse[6:8]); answerCount != 1 {
+		t.Fatalf("first response ANCOUNT = %d, want 1", answerCount)
+	}
+	secondResponse := exchangeTestTCPMessage(t, clientConn, sampleQueryWithTypeClass(TypeAAAA, ClassIN))
+	if answerCount := binary.BigEndian.Uint16(secondResponse[6:8]); answerCount != 1 {
+		t.Fatalf("second response ANCOUNT = %d, want 1", answerCount)
+	}
+
+	if err := clientConn.Close(); err != nil {
+		t.Fatalf("close TCP client: %v", err)
+	}
+	select {
+	case err := <-done:
+		if err != nil && !errors.Is(err, io.ErrClosedPipe) {
+			t.Fatalf("TCP connection handler returned error: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("TCP connection handler did not stop after client closed")
+	}
+
+	readCalls, writeCalls := trackedConn.deadlineCalls()
+	if readCalls < 3 {
+		t.Fatalf("SetReadDeadline calls = %d, want at least 3", readCalls)
+	}
+	if writeCalls != 2 {
+		t.Fatalf("SetWriteDeadline calls = %d, want 2", writeCalls)
+	}
+}
+
+func TestHandleTCPConnectionRejectsInvalidTimeouts(t *testing.T) {
+	serverConn, clientConn := net.Pipe()
+	defer serverConn.Close()
+	defer clientConn.Close()
+
+	if err := handleTCPConnectionWithTimeouts(serverConn, testZone(), io.Discard, 0, time.Second); err == nil {
+		t.Fatal("handler returned nil error for zero read timeout")
+	}
+	if err := handleTCPConnectionWithTimeouts(serverConn, testZone(), io.Discard, time.Second, 0); err == nil {
+		t.Fatal("handler returned nil error for zero write timeout")
+	}
+}
+
+func requireTimeoutError(t *testing.T, err error) {
+	t.Helper()
+	if err == nil {
+		t.Fatal("connection handler returned nil error, want timeout")
+	}
+
+	var netErr net.Error
+	if !errors.As(err, &netErr) || !netErr.Timeout() {
+		t.Fatalf("connection handler error = %v, want network timeout", err)
 	}
 }
 

@@ -435,6 +435,8 @@ A truncated response may contain part of an RRset. A client can retry the query 
 
 The server also listens for DNS over TCP on the same address. Each TCP DNS message uses a two-byte, big-endian length prefix. A connection can carry multiple queries, and different client connections are handled concurrently.
 
+Each connection has a 10-second read deadline for receiving one complete framed query and a 5-second write deadline for sending its response. The read deadline is refreshed before each query on a reused connection. Idle clients, incomplete frames, slow senders, and clients that stop reading responses therefore release their connection and handler goroutine instead of blocking indefinitely.
+
 Force a TCP query with:
 
 ```bash
@@ -475,6 +477,9 @@ Additional behavior coverage includes:
 - TCP messages use a two-byte length prefix and tolerate fragmented stream reads
 - Malformed and incomplete TCP frames are rejected
 - One TCP connection can carry multiple DNS queries
+- TCP read deadlines close idle and partially sending clients
+- TCP write deadlines close clients that stop reading responses
+- Read and write deadlines are refreshed for every query on a reused connection
 - An idle TCP client does not block queries from another connection
 - Oversized UDP RRsets are returned completely over TCP without `TC`
 - Response builder sets AA for in-zone answers

@@ -89,6 +89,8 @@ This prevents unused bytes from the fixed buffer from becoming part of the DNS m
 
 `main.go` also creates a TCP listener on the same address and passes it to `serveTCP`. Each accepted connection runs in its own goroutine, so one idle client does not block other clients. DNS over TCP is a byte stream, so `readTCPMessage` first reads a two-byte, big-endian message length and then uses `io.ReadFull` to read exactly that many bytes. The connection handler loops, allowing one TCP connection to carry multiple queries.
 
+Before each framed query, the connection handler sets a 10-second read deadline. The deadline covers both the length prefix and message body and is refreshed when the loop begins the next query. Before writing each response, the handler sets a 5-second write deadline. A client that remains idle, sends only part of a frame, or stops reading cannot retain a connection, file descriptor, and goroutine indefinitely.
+
 ### 3. Parse the DNS query
 
 `parseMessage` in `dns.go` converts the packet bytes into a `Message` struct. It expects exactly one question and does this work in order:
@@ -167,8 +169,8 @@ If required answer or authority data is omitted, the builder sets `TC = 1`. A pa
 | `record.go` | Defines the generic runtime record containing TTL and wire-ready RDATA. |
 | `zone.go` | Groups the origin and records by owner name and DNS type, and classifies names as in-zone or out-of-zone. |
 | `zone_test.go` | Tests zone-boundary matching and owner-name existence. |
-| `server.go` | Handles UDP datagrams and length-prefixed TCP streams, negotiates EDNS UDP limits, coordinates parsing and response building, and logs query results. |
-| `server_test.go` | Tests TCP framing and sends DNS queries through real loopback UDP and TCP listeners, including classic and EDNS oversized RRsets. |
+| `server.go` | Handles UDP datagrams and length-prefixed TCP streams, applies TCP deadlines, negotiates EDNS UDP limits, coordinates parsing and response building, and logs query results. |
+| `server_test.go` | Tests TCP framing, deadlines, and connection reuse and sends DNS queries through real loopback UDP and TCP listeners, including classic and EDNS oversized RRsets. |
 | `dns.go` | Parses DNS headers, flags, QNAMEs, questions, generic wire records, and EDNS OPT metadata. |
 | `response_plan.go` | Applies zone policy and selects answer and authority records for a query. |
 | `response.go` | Encodes response headers, questions, resource records, and response OPT metadata while applying whole-record truncation. |
@@ -203,6 +205,8 @@ The response plan is selected by zone membership, owner-name existence, QTYPE, a
 - The response builder reserves space for required OPT metadata before selecting complete answer records.
 - TCP framing is separate from DNS parsing because stream boundaries are not DNS message boundaries.
 - TCP connections are handled concurrently and may carry multiple sequential queries.
+- TCP read and write deadlines are transport policy owned by the connection handler, not the DNS framing or message parser.
+- The read deadline is refreshed per complete-query attempt rather than per received byte, limiting slow partial-frame clients.
 - Each packet is parsed into a `Message` once, and that parsed message is passed to the response builder.
 - The response builder depends on parsed data rather than the original query bytes.
 - The zone is passed explicitly to the response builder instead of being read as global state.
@@ -240,4 +244,4 @@ Run the unit tests:
 go test -count=1 ./...
 ```
 
-The test suite starts servers on operating-system-assigned loopback UDP and TCP ports. It verifies normal, EDNS-sized, and truncated RRsets, SOA, NODATA, NXDOMAIN, and REFUSED responses through real sockets. EDNS tests cover malformed OPT records, payload-size bounds, response OPT encoding, `BADVERS`, and complete UDP delivery of a 40-record RRset. TCP tests cover fragmented reads, malformed frames, multiple queries on one connection, and complete delivery of the same RRset. You can also run the server and use the `dig` commands in `README.md` for a manual demo.
+The test suite starts servers on operating-system-assigned loopback UDP and TCP ports. It verifies normal, EDNS-sized, and truncated RRsets, SOA, NODATA, NXDOMAIN, and REFUSED responses through real sockets. EDNS tests cover malformed OPT records, payload-size bounds, response OPT encoding, `BADVERS`, and complete UDP delivery of a 40-record RRset. TCP tests cover fragmented reads, malformed frames, idle and partial-read timeouts, blocked-write timeouts, refreshed deadlines, multiple queries on one connection, and complete delivery of the same RRset. You can also run the server and use the `dig` commands in `README.md` for a manual demo.
