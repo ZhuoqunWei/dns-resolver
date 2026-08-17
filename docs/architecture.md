@@ -48,6 +48,15 @@ flowchart LR
         TCP -->|"length-prefixed TCP response"| Client
     end
 
+    subgraph Lifecycle["Server lifecycle"]
+        Signal["SIGINT or SIGTERM"]
+        Coordinator["runServers"]
+
+        Signal -->|"cancel context"| Coordinator
+        Coordinator -->|"start and stop"| UDP
+        Coordinator -->|"start and stop"| TCP
+    end
+
     ZoneStore -->|"read-only lookup"| Planner
 ```
 
@@ -158,11 +167,18 @@ If required answer or authority data is omitted, the builder sets `TC = 1`. A pa
 - `NOERROR` with an SOA authority record for a missing type on an existing name.
 - `REFUSED` for a name outside the zone.
 
+### 6. Shut down the server
+
+`main.go` creates a context that is canceled by `SIGINT` or `SIGTERM` and passes it to `runServers`. The coordinator starts the UDP and TCP server loops, collects both results, and closes both listeners exactly once when the context is canceled or either transport exits.
+
+Closing the UDP socket releases `serveUDP` from `ReadFromUDP`. Closing the TCP listener releases `serveTCP` from `Accept`; its existing cleanup then closes active TCP connections and waits for their handler goroutines. `runServers` waits for both transport loops before returning, so the process does not exit while server goroutines are still running.
+
 ## File Responsibilities
 
 | File | Responsibility |
 | --- | --- |
-| `main.go` | Loads configured records, opens UDP and TCP listeners on the same port, and runs both server loops. |
+| `main.go` | Loads configured records, opens UDP and TCP listeners, handles shutdown signals, and coordinates both server loops. |
+| `main_test.go` | Tests coordinated cancellation, active TCP connection cleanup, and peer-transport shutdown after a server failure. |
 | `config.go` | Reads and validates A/AAAA/SOA JSON configuration, forms RRsets, and converts values into wire-ready runtime records. |
 | `config_test.go` | Tests SOA encoding, RRset rules, record types, address families, canonicalization, malformed input, and zone boundaries. |
 | `records.json` | Defines the zone origin, SOA metadata, and address records loaded when the server starts. |
@@ -207,6 +223,8 @@ The response plan is selected by zone membership, owner-name existence, QTYPE, a
 - TCP connections are handled concurrently and may carry multiple sequential queries.
 - TCP read and write deadlines are transport policy owned by the connection handler, not the DNS framing or message parser.
 - The read deadline is refreshed per complete-query attempt rather than per received byte, limiting slow partial-frame clients.
+- Process-level cancellation belongs to `main.go`; transport handlers still own their listener and connection cleanup.
+- If either transport exits, the lifecycle coordinator stops the other and waits for both before returning.
 - Each packet is parsed into a `Message` once, and that parsed message is passed to the response builder.
 - The response builder depends on parsed data rather than the original query bytes.
 - The zone is passed explicitly to the response builder instead of being read as global state.
@@ -244,4 +262,4 @@ Run the unit tests:
 go test -count=1 ./...
 ```
 
-The test suite starts servers on operating-system-assigned loopback UDP and TCP ports. It verifies normal, EDNS-sized, and truncated RRsets, SOA, NODATA, NXDOMAIN, and REFUSED responses through real sockets. EDNS tests cover malformed OPT records, payload-size bounds, response OPT encoding, `BADVERS`, and complete UDP delivery of a 40-record RRset. TCP tests cover fragmented reads, malformed frames, idle and partial-read timeouts, blocked-write timeouts, refreshed deadlines, multiple queries on one connection, and complete delivery of the same RRset. You can also run the server and use the `dig` commands in `README.md` for a manual demo.
+The test suite starts servers on operating-system-assigned loopback UDP and TCP ports. It verifies normal, EDNS-sized, and truncated RRsets, SOA, NODATA, NXDOMAIN, and REFUSED responses through real sockets. EDNS tests cover malformed OPT records, payload-size bounds, response OPT encoding, `BADVERS`, and complete UDP delivery of a 40-record RRset. TCP tests cover fragmented reads, malformed frames, idle and partial-read timeouts, blocked-write timeouts, refreshed deadlines, multiple queries on one connection, and complete delivery of the same RRset. Lifecycle tests verify that cancellation stops both transports and active TCP connections, and that an unexpected failure in one transport stops its peer. You can also run the server and use the `dig` commands in `README.md` for a manual demo.

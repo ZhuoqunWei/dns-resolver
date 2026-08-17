@@ -30,6 +30,7 @@ The server currently supports:
 * Returning a valid empty response for unsupported query classes
 * Negotiating UDP response sizes up to a 1232-byte server cap
 * Returning `BADVERS` for unsupported EDNS versions
+* Shutting down UDP, TCP, and active TCP connections on `SIGINT` or `SIGTERM`
 * Returning clear errors for malformed or truncated input
 
 The main parser function is:
@@ -313,6 +314,12 @@ Expected startup output:
 DNS server listening on 127.0.0.1:8053 over UDP and TCP
 ```
 
+Stop the server with `Ctrl+C`. On `SIGINT` or `SIGTERM`, the process closes both listeners, closes active TCP connections, waits for the transport goroutines to finish, and prints:
+
+```text
+DNS server stopped
+```
+
 ## Demo: A Query
 
 Run:
@@ -481,6 +488,8 @@ Additional behavior coverage includes:
 - TCP write deadlines close clients that stop reading responses
 - Read and write deadlines are refreshed for every query on a reused connection
 - An idle TCP client does not block queries from another connection
+- Cancellation stops both transports and closes active TCP connections
+- An unexpected failure in one transport stops the other transport
 - Oversized UDP RRsets are returned completely over TCP without `TC`
 - Response builder sets AA for in-zone answers
 - Response builder returns NXDOMAIN plus an SOA authority record for missing in-zone names
