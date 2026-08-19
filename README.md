@@ -1,37 +1,43 @@
-# Go DNS Resolver
+# Go Authoritative DNS Server
 
 [![CI](https://github.com/ZhuoqunWei/dns-resolver/actions/workflows/ci.yml/badge.svg)](https://github.com/ZhuoqunWei/dns-resolver/actions/workflows/ci.yml)
 
-A small DNS server written in Go as part of a systems/networking learning project.
+A compact authoritative DNS server implemented in Go without a DNS framework. It parses and encodes DNS wire messages, serves a JSON-configured zone over UDP and TCP, supports EDNS-aware truncation, and shuts down cleanly under process signals.
 
-The current version can parse basic DNS query messages from raw bytes, listen for DNS queries over UDP and TCP on `127.0.0.1:8053`, and serve one authoritative zone. It returns configured IPv4, IPv6, and SOA records loaded from `records.json`.
+The project intentionally does not perform recursive resolution, upstream forwarding, or caching. Its scope is a small, testable authoritative server whose protocol and transport behavior can be explained end to end. See the [architecture document](docs/architecture.md) for the request flow and design decisions.
 
-This is not a recursive resolver yet. It does not forward queries to upstream DNS servers, perform caching, or dynamically resolve real domain names.
+## Quick Start
 
+Start the server from source:
 
-## Current Server Behavior
+```bash
+go run .
+```
 
-The server currently supports:
+Or run the non-root container:
 
-* Reading two bytes safely as a `uint16`
-* Parsing the fixed-size DNS header
-* Extracting DNS flags from the 16-bit flags field
-* Parsing a DNS QNAME from length-prefixed labels
-* Parsing QTYPE and QCLASS
-* Parsing one complete DNS query message with exactly one question
-* Parsing EDNS(0) OPT metadata from the additional section
-* Listening for DNS queries over UDP and TCP on 127.0.0.1:8053
-* Building a valid DNS response packet
-* Returning configured A, AAAA, and SOA records for ClassIN
-* Setting AA on responses for names inside the configured zone
-* Returning NXDOMAIN with the zone SOA for missing in-zone names
-* Returning NOERROR with the zone SOA for missing record types on existing names
-* Returning REFUSED for names outside the configured zone
-* Returning a valid empty response for unsupported query classes
-* Negotiating UDP response sizes up to a 1232-byte server cap
-* Returning `BADVERS` for unsupported EDNS versions
-* Shutting down UDP, TCP, and active TCP connections on `SIGINT` or `SIGTERM`
-* Returning clear errors for malformed or truncated input
+```bash
+docker build -t dns-resolver:local .
+docker run --rm -p 8053:8053/udp -p 8053:8053/tcp dns-resolver:local
+```
+
+Then, from another terminal, the configured query returns `1.2.3.4`:
+
+```bash
+dig +noedns +short @127.0.0.1 -p 8053 example.com A
+```
+
+## Feature Matrix
+
+| Area | Implemented behavior |
+| --- | --- |
+| Wire format | DNS headers, flags, QNAME, QTYPE/QCLASS, resource records, and EDNS OPT metadata |
+| Zone data | Validated JSON configuration with A, AAAA, SOA, and multi-value RRsets |
+| Authority | Authoritative answers, NXDOMAIN, NOERROR/NODATA, REFUSED, and negative SOA records |
+| UDP | Classic 512-byte responses, EDNS negotiation up to 1232 bytes, and whole-record truncation |
+| TCP | Length-prefixed framing, concurrent clients, connection reuse, and read/write deadlines |
+| Lifecycle | Configurable startup options plus graceful `SIGINT`/`SIGTERM` shutdown |
+| Delivery | Static non-root container image and GitHub Actions container smoke testing |
 
 The main parser function is:
 
@@ -317,6 +323,16 @@ go run . -listen 127.0.0.1:9053 -config ./records.json
 
 UDP and TCP bind to the same resolved address. The server loads the selected configuration file before opening either listener.
 
+To use a custom zone in Docker, mount the file read-only at the container's default configuration path:
+
+```bash
+docker run --rm \
+  -p 8053:8053/udp \
+  -p 8053:8053/tcp \
+  -v "$PWD/records.json:/etc/dns-resolver/records.json:ro" \
+  dns-resolver:local
+```
+
 `Port 8053` is used instead of port `53` because port `53` often requires elevated permissions, and port `5353` may already be used by system services such as mDNS.
 
 Expected startup output:
@@ -517,13 +533,13 @@ This project intentionally does not support everything yet.
 **Current limitations:**
 
 - Supports one question only
-- Does not support compressed QNAMEs in incoming queries yet
+- Does not support compressed QNAMEs in incoming queries
 - EDNS support is limited to version 0 payload-size negotiation; DNSSEC data and other EDNS options are not implemented
 - UDP responses are limited to 512 bytes without EDNS and 1232 bytes with EDNS
-- Does not perform recursive resolution yet
-- Does not forward queries to upstream DNS servers yet
-- Does not implement caching yet
-- Loads configuration only at startup; live reload is not supported yet
+- Does not perform recursive resolution
+- Does not forward queries to upstream DNS servers
+- Does not implement caching
+- Loads configuration only at startup; live reload is not supported
 - Serves one configured zone
 - Configurable address records are limited to A and AAAA
 
@@ -538,3 +554,11 @@ These limitations are intentional because the current milestone is focused on au
 Expected result:
 
 `ok      github.com/zhuoqunwei/dns-resolver`
+
+Run the same container acceptance test used by CI:
+
+```bash
+./scripts/container-smoke.sh dns-resolver:smoke
+```
+
+The script builds the image, verifies positive UDP and TCP answers, checks NXDOMAIN and REFUSED responses, and confirms graceful container shutdown. The [release checklist](docs/release.md) contains the complete `v1.0.0` acceptance and tagging procedure.

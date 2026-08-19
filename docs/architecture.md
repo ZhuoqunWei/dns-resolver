@@ -80,6 +80,14 @@ dig @127.0.0.1 -p 8053 example.com A
 
 The server receives the query, parses `example.com`, builds an answer for `1.2.3.4`, and sends the response back to `dig`.
 
+## Container Runtime
+
+The Docker build compiles a statically linked Linux binary in a pinned Go builder image. The runtime uses `scratch`, contains only the binary and default zone file, and runs as the unprivileged numeric user `65532:65532`.
+
+The image binds `0.0.0.0:8053` inside the container and exposes both UDP and TCP. Host publication remains explicit in `docker run`, so local examples bind only the requested host ports. A read-only bind mount can replace `/etc/dns-resolver/records.json` without rebuilding the image.
+
+`scripts/container-smoke.sh` builds and starts the image, verifies positive UDP and TCP answers, checks NXDOMAIN and REFUSED behavior, and stops the container with `SIGTERM`. GitHub Actions runs the same script after the Go test job succeeds.
+
 ## Runtime Flow
 
 ### 1. Parse options and load configured records
@@ -181,6 +189,9 @@ Closing the UDP socket releases `serveUDP` from `ReadFromUDP`. Closing the TCP l
 
 | File | Responsibility |
 | --- | --- |
+| `Dockerfile` | Builds the static server binary and packages it with the default zone in a non-root scratch image. |
+| `.dockerignore` | Excludes repository metadata and local build artifacts from the container context. |
+| `.github/workflows/ci.yml` | Runs formatting, vet, race-enabled Go tests, and the container smoke test. |
 | `main.go` | Parses startup options, loads configured records, opens UDP and TCP listeners, handles shutdown signals, and coordinates both server loops. |
 | `main_test.go` | Tests startup options, shared transport binding, coordinated cancellation, active TCP connection cleanup, and peer-transport shutdown. |
 | `config.go` | Reads and validates A/AAAA/SOA JSON configuration, forms RRsets, and converts values into wire-ready runtime records. |
@@ -196,6 +207,8 @@ Closing the UDP socket releases `serveUDP` from `ReadFromUDP`. Closing the TCP l
 | `response.go` | Encodes response headers, questions, resource records, and response OPT metadata while applying whole-record truncation. |
 | `dns_test.go` | Tests parser behavior and malformed DNS query handling. |
 | `response_test.go` | Tests response flags, answer counts, answer bytes, and unsupported query behavior. |
+| `scripts/container-smoke.sh` | Verifies the built image through real UDP and TCP queries and graceful container shutdown. |
+| `docs/release.md` | Defines the version 1 scope, acceptance commands, and release procedure. |
 | `README.md` | Provides setup instructions, `dig` demos, DNS wire-format background, and limitations. |
 
 ## Current Behavior
@@ -244,6 +257,9 @@ The response plan is selected by zone membership, owner-name existence, QTYPE, a
 - Zone membership requires either the exact origin or a label-delimited subdomain, so `badexample.com` is not inside `example.com`.
 - Configuration is validated and converted into runtime records once during startup rather than parsed for each query.
 - Listen and configuration paths are explicit startup options with local-development defaults.
+- The container uses a static binary and an empty scratch runtime to minimize its filesystem and runtime dependency surface.
+- The container runs as a numeric non-root user and publishes no host ports unless the operator requests them.
+- Container CI exercises the image as a network service instead of treating a successful image build as sufficient verification.
 - The server accepts one question per message to keep the first implementation understandable.
 - The server reports `RA = 0` because it does not recursively resolve or forward queries.
 - The response uses compression for answer owner names. Incoming compressed QNAMEs are not supported yet.
@@ -268,3 +284,11 @@ go test -count=1 ./...
 ```
 
 The test suite starts servers on operating-system-assigned loopback UDP and TCP ports. It verifies normal, EDNS-sized, and truncated RRsets, SOA, NODATA, NXDOMAIN, and REFUSED responses through real sockets. EDNS tests cover malformed OPT records, payload-size bounds, response OPT encoding, `BADVERS`, and complete UDP delivery of a 40-record RRset. TCP tests cover fragmented reads, malformed frames, idle and partial-read timeouts, blocked-write timeouts, refreshed deadlines, multiple queries on one connection, and complete delivery of the same RRset. Lifecycle tests verify that cancellation stops both transports and active TCP connections, and that an unexpected failure in one transport stops its peer. You can also run the server and use the `dig` commands in `README.md` for a manual demo.
+
+The container acceptance path is:
+
+```bash
+./scripts/container-smoke.sh dns-resolver:smoke
+```
+
+It adds end-to-end checks for the built image, Docker port publication over both transports, authoritative response classes, and graceful `SIGTERM` handling.
