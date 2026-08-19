@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/binary"
 	"errors"
+	"flag"
 	"io"
 	"net"
+	"strings"
 	"testing"
 	"time"
 )
@@ -91,6 +93,96 @@ func TestRunServersStopsBothTransportsOnCancellation(t *testing.T) {
 	}
 }
 
+func TestParseServerOptions(t *testing.T) {
+	tests := []struct {
+		name string
+		args []string
+		want serverOptions
+	}{
+		{
+			name: "defaults",
+			want: serverOptions{
+				listenAddress: defaultListenAddress,
+				configPath:    defaultConfigPath,
+			},
+		},
+		{
+			name: "overrides",
+			args: []string{"-listen", "127.0.0.1:9053", "-config", "testdata/zone.json"},
+			want: serverOptions{
+				listenAddress: "127.0.0.1:9053",
+				configPath:    "testdata/zone.json",
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := parseServerOptions(tt.args, io.Discard)
+			if err != nil {
+				t.Fatalf("parseServerOptions() error = %v", err)
+			}
+			if got != tt.want {
+				t.Fatalf("parseServerOptions() = %+v, want %+v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestParseServerOptionsRejectsInvalidArguments(t *testing.T) {
+	tests := []struct {
+		name        string
+		args        []string
+		wantMessage string
+	}{
+		{name: "unknown flag", args: []string{"-unknown"}, wantMessage: "flag provided but not defined"},
+		{name: "missing flag value", args: []string{"-listen"}, wantMessage: "flag needs an argument"},
+		{name: "positional argument", args: []string{"records.json"}, wantMessage: "unexpected positional arguments"},
+		{name: "empty listen address", args: []string{"-listen", ""}, wantMessage: "listen address must not be empty"},
+		{name: "empty config path", args: []string{"-config", "  "}, wantMessage: "config path must not be empty"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := parseServerOptions(tt.args, io.Discard)
+			if err == nil {
+				t.Fatal("parseServerOptions() error = nil, want error")
+			}
+			if !strings.Contains(err.Error(), tt.wantMessage) {
+				t.Fatalf("parseServerOptions() error = %q, want message containing %q", err, tt.wantMessage)
+			}
+		})
+	}
+}
+
+func TestParseServerOptionsPrintsHelp(t *testing.T) {
+	var output strings.Builder
+	_, err := parseServerOptions([]string{"-h"}, &output)
+	if !errors.Is(err, flag.ErrHelp) {
+		t.Fatalf("parseServerOptions() error = %v, want flag.ErrHelp", err)
+	}
+	if help := output.String(); !strings.Contains(help, "-listen") || !strings.Contains(help, "-config") {
+		t.Fatalf("help output = %q, want listen and config options", help)
+	}
+}
+
+func TestListenDNSTransportsUsesSameAddress(t *testing.T) {
+	udpConn, tcpListener, err := listenDNSTransports("127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listenDNSTransports() error = %v", err)
+	}
+	defer udpConn.Close()
+	defer tcpListener.Close()
+
+	if udpConn.LocalAddr().String() != tcpListener.Addr().String() {
+		t.Fatalf(
+			"UDP address = %s, TCP address = %s, want equal addresses",
+			udpConn.LocalAddr(),
+			tcpListener.Addr(),
+		)
+	}
+}
+
 func TestRunServersStopsPeerTransportAfterServerFailure(t *testing.T) {
 	udpConn, err := net.ListenUDP("udp", &net.UDPAddr{
 		IP:   net.ParseIP("127.0.0.1"),
@@ -121,18 +213,9 @@ func TestRunServersStopsPeerTransportAfterServerFailure(t *testing.T) {
 func listenTestDNSTransports(t *testing.T) (*net.UDPConn, net.Listener) {
 	t.Helper()
 
-	tcpListener, err := net.Listen("tcp", "127.0.0.1:0")
+	udpConn, tcpListener, err := listenDNSTransports("127.0.0.1:0")
 	if err != nil {
-		t.Fatalf("listen for TCP: %v", err)
-	}
-	tcpAddr := tcpListener.Addr().(*net.TCPAddr)
-	udpConn, err := net.ListenUDP("udp", &net.UDPAddr{
-		IP:   net.ParseIP("127.0.0.1"),
-		Port: tcpAddr.Port,
-	})
-	if err != nil {
-		_ = tcpListener.Close()
-		t.Fatalf("listen for UDP: %v", err)
+		t.Fatalf("listen for test DNS transports: %v", err)
 	}
 
 	return udpConn, tcpListener

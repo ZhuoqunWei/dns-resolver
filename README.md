@@ -248,7 +248,7 @@ Question.QClass = 1
 
 ## Running the DNS Server
 
-The server loads `records.json` once during startup. The file defines the zone origin, its SOA metadata, and address records:
+By default, the server loads `records.json` once during startup. The file defines the zone origin, its SOA metadata, and address records:
 
 ```json
 {
@@ -297,14 +297,25 @@ The loader converts A, AAAA, and SOA values into wire-ready RDATA. Repeated owne
 The origin defines the zone served by this process. Names and type strings are normalized for case-insensitive lookup. Invalid names, unsupported types, address-family mismatches, duplicate values, mixed TTLs within an RRset, and records outside the configured zone prevent the server from starting.
 
 Start the server:
+
 ```
 go run .
 ```
-The server listens on:
 
+The default options are:
+
+```text
+-listen 127.0.0.1:8053
+-config records.json
 ```
-127.0.0.1:8053
+
+Override either value when starting the server:
+
+```bash
+go run . -listen 127.0.0.1:9053 -config ./records.json
 ```
+
+UDP and TCP bind to the same resolved address. The server loads the selected configuration file before opening either listener.
 
 `Port 8053` is used instead of port `53` because port `53` often requires elevated permissions, and port `5353` may already be used by system services such as mDNS.
 

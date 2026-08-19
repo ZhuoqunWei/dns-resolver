@@ -4,17 +4,19 @@
 
 This project is a small DNS server written in Go to learn DNS wire-format parsing, UDP and TCP networking, and DNS response construction.
 
-It is not a recursive resolver. It listens locally on `127.0.0.1:8053`, parses one DNS question, and serves authoritative A, AAAA, and SOA data for one configured zone. Negative in-zone responses include the zone SOA, while names outside the zone return `REFUSED`.
+It is not a recursive resolver. By default, it listens locally on `127.0.0.1:8053`, parses one DNS question, and serves authoritative A, AAAA, and SOA data for one configured zone. Negative in-zone responses include the zone SOA, while names outside the zone return `REFUSED`.
 
 ## Architecture Diagram
 
 ```mermaid
 flowchart LR
     subgraph Startup["Startup path"]
-        JSON["records.json"]
+        Options["serverOptions<br/>-listen and -config"]
+        JSON["zone JSON file"]
         Loader["loadZone<br/>parse and validate"]
         ZoneStore["Zone<br/>Records[name][type][]Record"]
 
+        Options -->|"config path"| JSON
         JSON --> Loader
         Loader --> ZoneStore
     end
@@ -57,10 +59,12 @@ flowchart LR
         Coordinator -->|"start and stop"| TCP
     end
 
+    Options -->|"shared listen address"| UDP
+    Options -->|"shared listen address"| TCP
     ZoneStore -->|"read-only lookup"| Planner
 ```
 
-The configuration file is read once before the UDP and TCP listeners are opened. The validated runtime zone is then reused for every query.
+The startup options default to `-listen 127.0.0.1:8053` and `-config records.json`. The selected configuration file is read once before the UDP and TCP listeners are opened on the same resolved address. The validated runtime zone is then reused for every query.
 
 For example, run the server in one terminal:
 
@@ -78,15 +82,15 @@ The server receives the query, parses `example.com`, builds an answer for `1.2.3
 
 ## Runtime Flow
 
-### 1. Load configured records
+### 1. Parse options and load configured records
 
-`main.go` calls `loadZone` with `records.json`. The loader decodes the JSON, canonicalizes the origin, names, and types, validates A and AAAA address families, and encodes the zone SOA. Repeated owner-and-type entries become one RRset. The loader rejects duplicate RDATA, inconsistent TTLs within an RRset, and out-of-zone records before creating the runtime `Zone`.
+`main.go` parses `-listen` and `-config` with Go's standard `flag` package, then calls `loadZone` with the selected configuration path. The loader decodes the JSON, canonicalizes the origin, names, and types, validates A and AAAA address families, and encodes the zone SOA. Repeated owner-and-type entries become one RRset. The loader rejects duplicate RDATA, inconsistent TTLs within an RRset, and out-of-zone records before creating the runtime `Zone`.
 
 If the file cannot be read or validated, the program exits before opening either network listener.
 
 ### 2. Receive a query over UDP or TCP
 
-`main.go` creates a UDP listener on `127.0.0.1:8053` and passes it to `serveUDP`. The server loop allocates a 1232-byte buffer, matching the server's EDNS UDP cap, then waits for packets with `ReadFromUDP`.
+`main.go` creates a UDP listener on the configured address and passes it to `serveUDP`. It then uses the UDP listener's resolved local address for TCP, ensuring both transports share the same interface and port even when the requested port is `0`. The server loop allocates a 1232-byte buffer, matching the server's EDNS UDP cap, then waits for packets with `ReadFromUDP`.
 
 `ReadFromUDP` returns the number of bytes received and the sender address. The program slices the buffer to the exact packet length before parsing it:
 
@@ -177,8 +181,8 @@ Closing the UDP socket releases `serveUDP` from `ReadFromUDP`. Closing the TCP l
 
 | File | Responsibility |
 | --- | --- |
-| `main.go` | Loads configured records, opens UDP and TCP listeners, handles shutdown signals, and coordinates both server loops. |
-| `main_test.go` | Tests coordinated cancellation, active TCP connection cleanup, and peer-transport shutdown after a server failure. |
+| `main.go` | Parses startup options, loads configured records, opens UDP and TCP listeners, handles shutdown signals, and coordinates both server loops. |
+| `main_test.go` | Tests startup options, shared transport binding, coordinated cancellation, active TCP connection cleanup, and peer-transport shutdown. |
 | `config.go` | Reads and validates A/AAAA/SOA JSON configuration, forms RRsets, and converts values into wire-ready runtime records. |
 | `config_test.go` | Tests SOA encoding, RRset rules, record types, address families, canonicalization, malformed input, and zone boundaries. |
 | `records.json` | Defines the zone origin, SOA metadata, and address records loaded when the server starts. |
@@ -239,6 +243,7 @@ The response plan is selected by zone membership, owner-name existence, QTYPE, a
 - Negative SOA TTLs follow the DNS negative-caching rule: `min(SOA TTL, SOA MINIMUM)`.
 - Zone membership requires either the exact origin or a label-delimited subdomain, so `badexample.com` is not inside `example.com`.
 - Configuration is validated and converted into runtime records once during startup rather than parsed for each query.
+- Listen and configuration paths are explicit startup options with local-development defaults.
 - The server accepts one question per message to keep the first implementation understandable.
 - The server reports `RA = 0` because it does not recursively resolve or forward queries.
 - The response uses compression for answer owner names. Incoming compressed QNAMEs are not supported yet.
