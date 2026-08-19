@@ -44,3 +44,24 @@ jobs:
 
       - name: Run tests with race detector
         run: go test -race -count=1 ./...
+
+  container:
+    name: Build and smoke-test container
+    needs: test
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Install dig
+        shell: bash
+        run: |
+          if ! command -v dig >/dev/null; then
+            sudo apt-get update
+            sudo apt-get install --yes dnsutils
+          fi
+
+      - name: Build and smoke-test image
+        run: ./scripts/container-smoke.sh dns-resolver:ci
